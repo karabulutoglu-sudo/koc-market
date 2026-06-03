@@ -1,0 +1,60 @@
+{
+  "name": "koc-market",
+  "version": "1.0.0",
+  "description": "Koç Market - Satış Sistemi (Electron masaüstü uygulaması)",
+  "main": "main.js",
+  "author": "Koç Market",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "publish": "electron-builder --publish always"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "electron-updater": "^6.2.1"
+  },
+  "build": {
+    "appId": "com.kocmarket.app",
+    "productName": "Koç Market",
+    "files": [
+      "main.js",
+      "index.html",
+      "build/**/*"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "karabulutoglu-sudo",
+        "repo": "koc-market"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Koç Market"
+    }
+  }
+}

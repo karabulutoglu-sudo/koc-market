@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Yedek / dışa aktarım dosyaları (isteğe bağlı - repoya yüklemek istemezseniz)
+koc-tam-yedek-*.json
+koc-urunler-*.csv

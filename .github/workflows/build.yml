@@ -1,0 +1,31 @@
+name: Build & Release
+
+# Her "v*" tag push'unda tetiklenir (örn: v1.0.1)
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Kaynak kodu çek
+        uses: actions/checkout@v4
+
+      - name: Node.js kurulumu
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Bağımlılıkları yükle
+        run: npm install
+
+      - name: Windows x64 NSIS installer üret ve GitHub Releases'a yükle
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run publish

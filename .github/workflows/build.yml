@@ -11,16 +11,16 @@ permissions:
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2025
 
     steps:
       - name: Kaynak kodu çek
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Node.js kurulumu
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Bağımlılıkları yükle
         run: npm install

@@ -1082,7 +1082,7 @@ function safeSaveJSON(key, value) {
   } catch (e) {
     if (e && (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014 ||
               (e.message && e.message.toLowerCase().includes('quota')))) {
-      alert(
+      appAlert(
         '⚠️ TARAYICI HAFIZASI DOLDU!\n\n' +
         'Verin kaydedilemiyor — eski yedeklerin yer kaplıyor olabilir.\n\n' +
         'YAPMAN GEREKENLER:\n' +
@@ -1093,7 +1093,7 @@ function safeSaveJSON(key, value) {
       );
     } else {
       console.error('[VERI KORUMA] Kayıt hatası:', e);
-      alert('⚠️ Veri kaydedilemedi: ' + (e.message || e));
+      appAlert('⚠️ Veri kaydedilemedi: ' + (e.message || e));
     }
     return false;
   }
@@ -1112,14 +1112,15 @@ window.addEventListener('storage', function(e) {
   if (_multiTabWarned) return;
   _multiTabWarned = true;
   setTimeout(() => {
-    if (confirm(
-      '⚠ ÇOKLU SEKME ALGILANDI\n\n' +
-      'Aynı program başka bir sekmede de açık ve orada veri değişti.\n' +
-      'Bu sekmedeki bilgiler eski olabilir.\n\n' +
-      'Sayfayı yenileyip güncel veriyi yükleyeyim mi?'
-    )) {
-      location.reload();
-    }
+    appConfirm({
+      title: '⚠ Çoklu sekme algılandı',
+      bodyHtml: escHtml(
+        'Aynı program başka bir sekmede de açık ve orada veri değişti.\n' +
+        'Bu sekmedeki bilgiler eski olabilir.\n\n' +
+        'Sayfayı yenileyip güncel veriyi yükleyeyim mi?'),
+      okText: 'Yenile', cancelText: 'Şimdi değil',
+      onOk: function(){ location.reload(); }
+    });
   }, 500);
 });
 
@@ -1531,6 +1532,41 @@ function appConfirm(opts){
   document.addEventListener('keydown', onKey, true);
   // Güvenli varsayılan: İptal'e odak (yanlış/okuyucu Enter'ı kaza ile onaylamasın)
   setTimeout(() => { const c = ov.querySelector('#appConfirmCancel'); if (c) c.focus(); }, 30);
+}
+
+// ── BLOKLAMAYAN UYGULAMA-İÇİ BİLGİ/HATA KUTUSU (alert() yerine) ──
+// Yerleşik alert() de BLOKLAYICIdır ve odağı bozar. Bu kutu bloklamaz; tek
+// "Tamam" butonu vardır. Parametre: düz metin VEYA {title,bodyHtml,okText,onOk}.
+// Düz metin verilirse otomatik escHtml'lenir (HTML enjeksiyonu olmaz).
+function appAlert(msgOrOpts){
+  const o = (typeof msgOrOpts === 'string') ? { bodyHtml: escHtml(msgOrOpts) } : (msgOrOpts || {});
+  const eski = document.getElementById('appConfirmOverlay');
+  if (eski) eski.remove();   // aynı anda tek kutu (confirm ile ortak id)
+  const ov = document.createElement('div');
+  ov.id = 'appConfirmOverlay';
+  ov.className = 'modal-overlay show';
+  ov.innerHTML =
+    '<div class="modal-card" style="max-width:480px">' +
+      '<div class="modal-title">' + escHtml(o.title || 'Bilgi') + '</div>' +
+      '<div style="font-size:14px;color:#222;line-height:1.55;white-space:pre-wrap;margin-bottom:18px">' + (o.bodyHtml || '') + '</div>' +
+      '<div style="display:flex;gap:10px;justify-content:flex-end">' +
+        '<button id="appAlertOk" style="padding:10px 18px;border-radius:8px;border:none;background:linear-gradient(135deg,var(--accent),var(--accent3));color:#fff;font-weight:900;font-size:14px;cursor:pointer">' + escHtml(o.okText || 'Tamam') + '</button>' +
+      '</div>' +
+    '</div>';
+  function close(){ ov.remove(); document.removeEventListener('keydown', onKey, true); }
+  function doOk(){ close(); try { o.onOk && o.onOk(); } finally { focusBarcode(); } }
+  function onKey(e){ if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); doOk(); } }
+  document.body.appendChild(ov);
+  ov.querySelector('#appAlertOk').addEventListener('click', doOk);
+  document.addEventListener('keydown', onKey, true);
+  setTimeout(() => { const c = ov.querySelector('#appAlertOk'); if (c) c.focus(); }, 30);
+}
+
+// ÜRÜNLER ekranındaki arama kutusuna odağı geri ver — silme/toplu işlem sonrası
+// kutu "ölü" kalmasın, kullanıcı hemen yazmaya/barkod okutmaya devam edebilsin.
+function _focusProdSearch(){
+  const el = document.getElementById('prodSearch');
+  if (el && el.offsetParent !== null) { try { el.focus(); } catch(e){} }
 }
 
 // "Ürün bulunamadı → yeni ürün olarak ekle?" — bloklamayan akış
@@ -2018,23 +2054,41 @@ function closeHeldList() { document.getElementById('heldOverlay').classList.remo
 function resumeHeld(id) {
   const idx = heldSales.findIndex(h => h.id === id);
   if (idx < 0) return;
-  if (cart.length > 0) {
-    if (!confirm('Mevcut sepetiniz dolu. Bekleyen satışı yüklemek için önce mevcut sepeti de beklemeye almak ister misiniz?\n\nOK = Mevcut sepeti de beklemeye al ve yükle\nCancel = İptal')) return;
-    holdSale();
+  // Yüklemeyi gerçekleştiren ortak adım (barkodu id ile tekrar bul — kutu açıkken
+  // liste değişmiş olabilir).
+  function _doResume(){
+    const i = heldSales.findIndex(h => h.id === id);
+    if (i < 0) return;
+    cart = heldSales[i].cart.map(c => ({...c}));
+    heldSales.splice(i, 1);
+    saveHeld();
+    closeHeldList();
+    renderCart();
+    flash('↩ Bekleyen satış yüklendi', true);
   }
-  cart = heldSales[idx].cart.map(c => ({...c}));
-  heldSales.splice(idx, 1);
-  saveHeld();
-  closeHeldList();
-  renderCart();
-  flash('↩ Bekleyen satış yüklendi', true);
+  if (cart.length > 0) {
+    appConfirm({
+      title: 'Mevcut sepet dolu',
+      bodyHtml: 'Mevcut sepetiniz dolu. Bekleyen satışı yüklemek için önce mevcut sepeti de beklemeye almak ister misiniz?',
+      okText: 'Beklemeye al ve yükle', cancelText: 'İptal',
+      onOk: function(){ holdSale(); _doResume(); }
+    });
+    return;
+  }
+  _doResume();
 }
 function deleteHeld(id) {
-  if (!confirm('Bu bekleyen satış silinsin mi? Geri alınamaz.')) return;
-  heldSales = heldSales.filter(h => h.id !== id);
-  saveHeld();
-  openHeldList();
-  if (heldSales.length === 0) closeHeldList();
+  appConfirm({
+    title: 'Bekleyen satışı sil',
+    bodyHtml: 'Bu bekleyen satış silinsin mi? Geri alınamaz.',
+    okText: '✕ Sil', cancelText: 'Vazgeç',
+    onOk: function(){
+      heldSales = heldSales.filter(h => h.id !== id);
+      saveHeld();
+      openHeldList();
+      if (heldSales.length === 0) closeHeldList();
+    }
+  });
 }
 
 // ── FİYAT GÖR MODU ──
@@ -2078,16 +2132,27 @@ function addPriceCheckToCart() {
 // ── SATIŞ İPTAL ──
 function cancelSale() {
   if (cart.length === 0 && !paying) { flash('Zaten boş', false); return; }
-  if (cart.length > 2 && !confirm(cart.length + ' ürün var. Satış iptal edilsin mi? Geri alınamaz.')) return;
-  cart = [];
-  paying = false;
-  qtyMultiplier = 1;
-  priceCheckMode = false;
-  document.getElementById('priceModeBtn').classList.remove('active');
-  showMultIndicator();
-  renderCart();
-  flash('✕ Satış iptal edildi', true);
-  focusBarcode();
+  function _doCancel(){
+    cart = [];
+    paying = false;
+    qtyMultiplier = 1;
+    priceCheckMode = false;
+    document.getElementById('priceModeBtn').classList.remove('active');
+    showMultIndicator();
+    renderCart();
+    flash('✕ Satış iptal edildi', true);
+    focusBarcode();
+  }
+  if (cart.length > 2) {
+    appConfirm({
+      title: 'Satışı iptal et',
+      bodyHtml: escHtml(cart.length + ' ürün var. Satış iptal edilsin mi? Geri alınamaz.'),
+      okText: '✕ İptal et', cancelText: 'Vazgeç',
+      onOk: _doCancel
+    });
+    return;
+  }
+  _doCancel();
 }
 
 // ── MUHTELİF ÜRÜN ──
@@ -2232,16 +2297,22 @@ function deleteMiscFromForm() {
   }
   const p = products.find(x => x.b === miscEditingBarcode);
   if (!p) return;
-  if (!confirm('"' + p.n + '" barkodsuz ürünü kalıcı olarak silinsin mi?\n\n(Sepetteki kullanım ve geçmiş satışlar etkilenmez.)')) return;
-  const idx = products.indexOf(p);
-  if (idx >= 0) products.splice(idx, 1);
-  save();
-  renderQuick();
-  miscEditingBarcode = null;
-  // Forma dön ama açık kalsın (kullanıcı başka ürün ekleyebilir)
-  cancelEditMisc();
-  renderMiscPicks();
-  flash('"' + p.n + '" silindi', true);
+  appConfirm({
+    title: 'Barkodsuz ürünü sil',
+    bodyHtml: '<b>' + escHtml(p.n) + '</b> barkodsuz ürünü kalıcı olarak silinsin mi?\n\n(Sepetteki kullanım ve geçmiş satışlar etkilenmez.)',
+    okText: '✕ Sil', cancelText: 'Vazgeç',
+    onOk: function(){
+      const idx = products.indexOf(p);
+      if (idx >= 0) products.splice(idx, 1);
+      save();
+      renderQuick();
+      miscEditingBarcode = null;
+      // Forma dön ama açık kalsın (kullanıcı başka ürün ekleyebilir)
+      cancelEditMisc();
+      renderMiscPicks();
+      flash('"' + p.n + '" silindi', true);
+    }
+  });
 }
 
 // Yeni öneri (kayıtlı olmayan) tıklandı — sadece adı forma yaz
@@ -2510,19 +2581,29 @@ function deleteZeroPriceInCategory() {
     '✅ Fiyatı girilmiş (korunacak): ' +
       products.filter(p => p.c === prodCatFilter && p.p > 0).length + ' ürün\n\n' +
     'Silinsin mi?';
-  if (!confirm(uyari)) return;
+  appConfirm({
+    title: '⚠ Toplu silme', bodyHtml: escHtml(uyari),
+    okText: 'Devam', cancelText: 'Vazgeç',
+    onOk: function(){
+      // İKİNCİ onay — 400 ürün kazasını tekrarlamamak için
+      appConfirm({
+        title: '⚠ SON UYARI',
+        bodyHtml: escHtml('SON UYARI: ' + toDelete.length + ' ürün silinecek. EMİN MİSİN?\n\nSil → Hepsini sil\nVazgeç → Hiçbir şey olmasın'),
+        okText: '✕ Sil', cancelText: 'Vazgeç',
+        onOk: function(){
+          // Önce yedek al
+          try { makeBackup('Fiyatsız silmeden önce (' + prodCatFilter + ')'); } catch(e){}
 
-  // İKİNCİ onay — 400 ürün kazasını tekrarlamamak için
-  if (!confirm('SON UYARI: ' + toDelete.length + ' ürün silinecek. EMİN MİSİN?\n\nTamam → Sil\nİptal → Hiçbir şey olmasın')) return;
-
-  // Önce yedek al
-  try { makeBackup('Fiyatsız silmeden önce (' + prodCatFilter + ')'); } catch(e){}
-
-  const silinenSet = new Set(toDelete.map(p => p.b));
-  products = products.filter(p => !silinenSet.has(p.b));
-  _originalSave();
-  renderProds(); renderQuick(); refreshCategoryDatalist();
-  flash('✓ ' + toDelete.length + ' ürün silindi (yedek alındı). Şu an ' + products.length + ' ürün var.', true);
+          const silinenSet = new Set(toDelete.map(p => p.b));
+          products = products.filter(p => !silinenSet.has(p.b));
+          _originalSave();
+          renderProds(); renderQuick(); refreshCategoryDatalist();
+          flash('✓ ' + toDelete.length + ' ürün silindi (yedek alındı). Şu an ' + products.length + ' ürün var.', true);
+          _focusProdSearch();
+        }
+      });
+    }
+  });
 }
 
 function setProdCatFilter(cat) {
@@ -2653,15 +2734,28 @@ function bulkDeleteSelected() {
   if (n === 0) return;
   const list = products.filter(p => selectedBarcodes.has(p.b));
   const ornek = list.slice(0, 8).map(p => '  • ' + p.n).join('\n');
-  if (!confirm('⚠ TOPLU SİLME\n\n' + n + ' ürün silinecek:\n\n' + ornek + (n > 8 ? '\n  ... +' + (n - 8) + ' tane daha' : '') + '\n\n🛡️ Önce otomatik yedek alınacak.\n    Yanlış olursa: 💾 Yedekler > GERİ YÜKLE\n\nDevam?')) return;
-  if (!confirm('SON UYARI: ' + n + ' ürün silinecek. EMİN MİSİN?')) return;
-  try { makeBackup('Toplu silmeden önce'); } catch(e){}
-  products = products.filter(p => !selectedBarcodes.has(p.b));
-  selectedBarcodes.clear();
-  lastClickedIdx = -1;
-  _originalSave();
-  renderProds(); renderQuick(); refreshCategoryDatalist();
-  flash('✓ ' + n + ' ürün silindi (yedek alındı). Kalan: ' + products.length, true);
+  appConfirm({
+    title: '⚠ Toplu silme',
+    bodyHtml: escHtml(n + ' ürün silinecek:\n\n' + ornek + (n > 8 ? '\n  ... +' + (n - 8) + ' tane daha' : '') + '\n\n🛡️ Önce otomatik yedek alınacak.\n    Yanlış olursa: 💾 Yedekler > GERİ YÜKLE'),
+    okText: 'Devam', cancelText: 'Vazgeç',
+    onOk: function(){
+      appConfirm({
+        title: '⚠ SON UYARI',
+        bodyHtml: escHtml('SON UYARI: ' + n + ' ürün silinecek. EMİN MİSİN?'),
+        okText: '✕ Sil', cancelText: 'Vazgeç',
+        onOk: function(){
+          try { makeBackup('Toplu silmeden önce'); } catch(e){}
+          products = products.filter(p => !selectedBarcodes.has(p.b));
+          selectedBarcodes.clear();
+          lastClickedIdx = -1;
+          _originalSave();
+          renderProds(); renderQuick(); refreshCategoryDatalist();
+          flash('✓ ' + n + ' ürün silindi (yedek alındı). Kalan: ' + products.length, true);
+          _focusProdSearch();
+        }
+      });
+    }
+  });
 }
 
 function bulkMoveCategory() {
@@ -2669,20 +2763,27 @@ function bulkMoveCategory() {
   if (n === 0) return;
   const newCat = document.getElementById('bulkMoveCat').value;
   if (!newCat) return;
-  if (!confirm(n + ' ürün "' + newCat + '" kategorisine taşınacak.\n\n🛡️ Önce yedek alınacak.\n\nDevam?')) return;
-  try { makeBackup('Kategori değişikliğinden önce'); } catch(e){}
-  let changed = 0;
-  products.forEach(p => {
-    if (selectedBarcodes.has(p.b)) {
-      p.c = newCat;
-      // KDV'yi de kategoriye göre otomatik düzelt
-      p.k = suggestKdvForCat(newCat);
-      changed++;
+  appConfirm({
+    title: 'Kategoriye taşı',
+    bodyHtml: escHtml(n + ' ürün "' + newCat + '" kategorisine taşınacak.\n\n🛡️ Önce yedek alınacak.'),
+    okText: '→ Taşı', cancelText: 'Vazgeç',
+    onOk: function(){
+      try { makeBackup('Kategori değişikliğinden önce'); } catch(e){}
+      let changed = 0;
+      products.forEach(p => {
+        if (selectedBarcodes.has(p.b)) {
+          p.c = newCat;
+          // KDV'yi de kategoriye göre otomatik düzelt
+          p.k = suggestKdvForCat(newCat);
+          changed++;
+        }
+      });
+      _originalSave();
+      renderProds(); renderQuick(); refreshCategoryDatalist();
+      flash('✓ ' + changed + ' ürün "' + newCat + '" kategorisine taşındı + KDV güncellendi', true);
+      _focusProdSearch();
     }
   });
-  _originalSave();
-  renderProds(); renderQuick(); refreshCategoryDatalist();
-  flash('✓ ' + changed + ' ürün "' + newCat + '" kategorisine taşındı + KDV güncellendi', true);
 }
 
 function bulkSetKdv() {
@@ -2690,15 +2791,22 @@ function bulkSetKdv() {
   if (n === 0) return;
   const kdv = parseInt(document.getElementById('bulkSetKdv').value);
   if (isNaN(kdv)) return;
-  if (!confirm(n + ' ürünün KDV oranı %' + kdv + ' yapılacak.\n\n🛡️ Önce yedek alınacak.\n\nDevam?')) return;
-  try { makeBackup('KDV değişikliğinden önce'); } catch(e){}
-  let changed = 0;
-  products.forEach(p => {
-    if (selectedBarcodes.has(p.b)) { p.k = kdv; changed++; }
+  appConfirm({
+    title: 'KDV değiştir',
+    bodyHtml: escHtml(n + ' ürünün KDV oranı %' + kdv + ' yapılacak.\n\n🛡️ Önce yedek alınacak.'),
+    okText: 'Uygula', cancelText: 'Vazgeç',
+    onOk: function(){
+      try { makeBackup('KDV değişikliğinden önce'); } catch(e){}
+      let changed = 0;
+      products.forEach(p => {
+        if (selectedBarcodes.has(p.b)) { p.k = kdv; changed++; }
+      });
+      _originalSave();
+      renderProds(); renderQuick();
+      flash('✓ ' + changed + ' ürünün KDV\'si %' + kdv + ' yapıldı', true);
+      _focusProdSearch();
+    }
   });
-  _originalSave();
-  renderProds(); renderQuick();
-  flash('✓ ' + changed + ' ürünün KDV\'si %' + kdv + ' yapıldı', true);
 }
 
 // HTML özel karakterleri kaç
@@ -2835,10 +2943,19 @@ function delProdByIdx(idx) {
   const p = products[idx];
   if (!p) return;
   const ad = p.n && p.n.length>0 ? p.n.slice(0,30) : '[bu ürün]';
-  if (!confirm(ad + ' silinsin mi?')) return;
-  products.splice(idx, 1);
-  save(); renderProds(); renderQuick();
-  flash('Silindi', true);
+  appConfirm({
+    title: 'Ürünü sil',
+    bodyHtml: '<b>' + escHtml(ad) + '</b> silinsin mi?',
+    okText: '✕ Sil', cancelText: 'Vazgeç',
+    onOk: function(){
+      const i = products.indexOf(p);   // kutu açıkken liste değişmiş olabilir → indexOf
+      if (i < 0) return;
+      products.splice(i, 1);
+      save(); renderProds(); renderQuick();
+      flash('Silindi', true);
+      _focusProdSearch();              // arama kutusu ölmesin
+    }
+  });
 }
 
 
@@ -2858,7 +2975,7 @@ function _bugunKey(){
 function saglikKontrolu() {
   // 1) Veri tutarlılığı: array tipinde mi?
   if (!Array.isArray(products)) {
-    alert('⚠ Ürün listesi formatı bozuk! Sıfırlamak yerine 💾 Geri Al menüsünden son sağlam yedeği geri yükle.');
+    appAlert('⚠ Ürün listesi formatı bozuk! Sıfırlamak yerine 💾 Geri Al menüsünden son sağlam yedeği geri yükle.');
     return;
   }
   if (!Array.isArray(sales)) sales = [];
@@ -2944,13 +3061,13 @@ async function _hemenYedekAl() {
     const name = 'koc-tam-yedek-' + stamp + '.json';
     const res = await saveFileSmart(name, JSON.stringify(payload, null, 2));
     if (res && res.canceled) return;
-    if (!res || !res.ok) { alert('❌ Yedek kaydedilemedi: ' + (res && res.error || 'bilinmeyen hata')); return; }
+    if (!res || !res.ok) { appAlert('❌ Yedek kaydedilemedi: ' + (res && res.error || 'bilinmeyen hata')); return; }
     LS.setItem('koc-son-yedek', String(Date.now()));
     document.getElementById('yedekHatirlatmaOverlay')?.remove();
     const nerede = (res.path && !res.browser) ? ('\n📁 ' + res.path) : '';
     flash('✓ Yedek kaydedildi (' + products.length + ' ürün, ' + (sales || []).length + ' satış)' + nerede, true);
   } catch(e) {
-    alert('Yedek alınamadı: ' + e.message);
+    appAlert('Yedek alınamadı: ' + e.message);
   }
 }
 
@@ -3303,7 +3420,7 @@ function renderHistory() {
 
       // Daha kalıcı bir alert — kullanıcı flash'ı kaçırmasın
       setTimeout(() => {
-        alert(
+        appAlert(
           '✓ KDV ONARIMI TAMAMLANDI\n' +
           '──────────────────────────────\n\n' +
           dzltn + ' sigara/tütün ürününün KDV oranı %0 olarak ayarlandı.\n\n' +
@@ -3315,7 +3432,7 @@ function renderHistory() {
       }, 400);
     } catch(err) {
       console.error('[KDV-FIX-v10] Hata:', err);
-      alert('⚠ Sigara KDV onarımı sırasında hata oluştu:\n' + err.message +
+      appAlert('⚠ Sigara KDV onarımı sırasında hata oluştu:\n' + err.message +
             '\n\nLütfen ÜRÜNLER > 💾 Geri Al ile son yedeğe dön.');
     }
   }, 600);
@@ -3487,20 +3604,32 @@ function restoreBackup(idx) {
     detayMsg += `, bekleyen satışların (${(heldSales || []).length} adet)`;
     yedekDetay += `, ${b.heldCount || b.heldSales.length} bekleyen`;
   }
-  if (!confirm(`⚠ GERİ YÜKLEME\n\n${detayMsg} → seçtiğin yedekle (${yedekDetay}, ${tarih}) DEĞİŞTİRİLECEK.\n\n${hasSales ? 'NOT: Satış geçmişi de geri yüklenecek — yedek tarihinden sonraki satışlar SİLİNECEK.\n\n' : ''}Devam etmeden önce otomatik yedek alınacak, gerekirse geri dönebilirsin.\n\nEmin misin?`)) return;
-  if (!confirm('SON ONAY: ' + yedekDetay + ' içeren ' + tarih + ' tarihli yedek yüklenecek. DEVAM ET?')) return;
-  makeBackup('Geri yüklemeden önce');
-  products = JSON.parse(JSON.stringify(b.products));
-  if (hasSales) sales = JSON.parse(JSON.stringify(b.sales));
-  if (hasHeld)  heldSales = JSON.parse(JSON.stringify(b.heldSales));
-  _originalSave();
-  if (hasHeld && typeof saveHeld === 'function') saveHeld();
-  renderProds(); renderQuick(); refreshCategoryDatalist();
-  if (typeof renderHistory === 'function') renderHistory();
-  if (typeof updateHeldBadge === 'function') updateHeldBadge();
-  if (typeof updateStats === 'function') updateStats();
-  document.getElementById('backupMgrOverlay')?.remove();
-  flash('✓ Geri yüklendi: ' + yedekDetay + ' (' + tarih + ')', true);
+  appConfirm({
+    title: '⚠ Geri yükleme',
+    bodyHtml: escHtml(`${detayMsg} → seçtiğin yedekle (${yedekDetay}, ${tarih}) DEĞİŞTİRİLECEK.\n\n${hasSales ? 'NOT: Satış geçmişi de geri yüklenecek — yedek tarihinden sonraki satışlar SİLİNECEK.\n\n' : ''}Devam etmeden önce otomatik yedek alınacak, gerekirse geri dönebilirsin.\n\nEmin misin?`),
+    okText: 'Devam', cancelText: 'Vazgeç',
+    onOk: function(){
+      appConfirm({
+        title: '⚠ SON ONAY',
+        bodyHtml: escHtml('SON ONAY: ' + yedekDetay + ' içeren ' + tarih + ' tarihli yedek yüklenecek. DEVAM ET?'),
+        okText: '↩ Geri yükle', cancelText: 'Vazgeç',
+        onOk: function(){
+          makeBackup('Geri yüklemeden önce');
+          products = JSON.parse(JSON.stringify(b.products));
+          if (hasSales) sales = JSON.parse(JSON.stringify(b.sales));
+          if (hasHeld)  heldSales = JSON.parse(JSON.stringify(b.heldSales));
+          _originalSave();
+          if (hasHeld && typeof saveHeld === 'function') saveHeld();
+          renderProds(); renderQuick(); refreshCategoryDatalist();
+          if (typeof renderHistory === 'function') renderHistory();
+          if (typeof updateHeldBadge === 'function') updateHeldBadge();
+          if (typeof updateStats === 'function') updateStats();
+          document.getElementById('backupMgrOverlay')?.remove();
+          flash('✓ Geri yüklendi: ' + yedekDetay + ' (' + tarih + ')', true);
+        }
+      });
+    }
+  });
 }
 
 async function downloadBackup(idx) {
@@ -3512,7 +3641,7 @@ async function downloadBackup(idx) {
   const content = JSON.stringify({ts:b.ts, reason:b.reason, count:b.count, products:b.products}, null, 2);
   const res = await saveFileSmart('koc-yedek-' + stamp + '.json', content);
   if (res && res.canceled) return;
-  if (!res || !res.ok) { alert('❌ Kaydedilemedi: ' + (res && res.error || 'bilinmeyen hata')); return; }
+  if (!res || !res.ok) { appAlert('❌ Kaydedilemedi: ' + (res && res.error || 'bilinmeyen hata')); return; }
   if (res.path && !res.browser) flash('✓ Yedek kaydedildi: ' + res.path, true);
 }
 
@@ -3583,7 +3712,7 @@ async function doExportJson() {
   const name = 'koc-tam-yedek-' + stamp + '.json';
   const res = await saveFileSmart(name, JSON.stringify(payload, null, 2));
   if (res && res.canceled) return;
-  if (!res || !res.ok) { alert('❌ Yedek kaydedilemedi: ' + (res && res.error || 'bilinmeyen hata')); return; }
+  if (!res || !res.ok) { appAlert('❌ Yedek kaydedilemedi: ' + (res && res.error || 'bilinmeyen hata')); return; }
   LS.setItem('koc-son-yedek', String(Date.now()));
   const nerede = (res.path && !res.browser) ? ('\n📁 ' + res.path) : '';
   flash('✓ Yedek kaydedildi: ' + products.length + ' ürün, ' + (sales || []).length + ' satış' + nerede, true);
@@ -3630,10 +3759,10 @@ async function doExportCsv() {
   const name = 'koc-urunler-' + stamp + '.csv';
   const res = await saveFileSmart(name, csvContent);
   if (res && res.canceled) return;
-  if (!res || !res.ok) { alert('❌ CSV kaydedilemedi: ' + (res && res.error || 'bilinmeyen hata')); return; }
+  if (!res || !res.ok) { appAlert('❌ CSV kaydedilemedi: ' + (res && res.error || 'bilinmeyen hata')); return; }
   LS.setItem('koc-son-yedek', String(Date.now()));
   const nerede = (res.path && !res.browser) ? ('📁 ' + res.path + '\n\n') : '';
-  alert(
+  appAlert(
     '✓ ' + products.length + ' ürün CSV olarak kaydedildi.\n' + nerede + '\n' +
     '📋 Excel\'de açmak için:\n' +
     '   Dosyaya çift tıkla → Excel otomatik açar.\n\n' +
@@ -3651,9 +3780,9 @@ async function importProductsJson() {
   if (window.kocFile && window.kocFile.open) {
     let res;
     try { res = await window.kocFile.open(); }
-    catch(e) { alert('❌ Dosya açılamadı: ' + e.message); return; }
+    catch(e) { appAlert('❌ Dosya açılamadı: ' + e.message); return; }
     if (!res || res.canceled) return;
-    if (!res.ok) { alert('❌ Dosya açılamadı: ' + (res.error || 'bilinmeyen hata')); return; }
+    if (!res.ok) { appAlert('❌ Dosya açılamadı: ' + (res.error || 'bilinmeyen hata')); return; }
     processImportedFile(res.contents, res.path || '');
     return;
   }
@@ -3674,95 +3803,127 @@ async function importProductsJson() {
 // İçe aktarma mantığı — kaynak (Electron dialog veya tarayıcı) fark etmez.
 function processImportedFile(txt, fileName) {
       const isCsv = /\.csv$/i.test(fileName) || txt.trim().startsWith('sep=;') || txt.trim().startsWith('\ufeffsep=;') || (txt.split('\n')[0].includes('BARKOD') && txt.includes(';'));
-      try {
-        let list;
-        if (isCsv) {
-          list = parseCsvProducts(txt);
-          if (!list || list.length === 0) {
-            alert('❌ CSV okunamadı. Dosyanın ilk satırı "sep=;" ve ikinci satırı "BARKOD;URUN ADI;FIYAT;STOK;KATEGORI;KDV" formatında olmalı.');
-            return;
-          }
-        } else {
-          const parsed = JSON.parse(txt);
-          list = Array.isArray(parsed) ? parsed : (parsed.products || parsed.urunler || []);
-          // V7.2 TAM YEDEK: dosyada satışlar ve bekleyenler de varsa, kullanıcıya sor
-          if (!Array.isArray(parsed) && (Array.isArray(parsed.sales) || Array.isArray(parsed.heldSales))) {
-            const ds = parsed.sales || [];
-            const dh = parsed.heldSales || [];
-            const tamYedekMsg =
-              '📦 TAM YEDEK ALGILANDI\n\n' +
-              'Bu dosya sadece ürün listesi değil, ayrıca:\n' +
-              '  • ' + ds.length + ' satış kaydı\n' +
-              '  • ' + dh.length + ' bekleyen satış\n' +
-              'içeriyor.\n\n' +
-              'Şu anki satış geçmişin: ' + (sales || []).length + ' kayıt\n' +
-              'Şu anki bekleyenler: ' + (heldSales || []).length + ' adet\n\n' +
-              'NE YAPILSIN?\n' +
-              '  EVET = Satış geçmişi ve bekleyenler de DOSYADAKİ ile DEĞİŞTİRİLSİN\n' +
-              '         (mevcut satış geçmişin ÜZERİNE YAZILACAK!)\n' +
-              '  HAYIR = Sadece ürünler güncellensin, satışlara dokunma';
-            const tamYukle = confirm(tamYedekMsg);
-            if (tamYukle) {
-              if (confirm('SON ONAY: Mevcut ' + (sales || []).length + ' satış kaydın ve ' + (heldSales || []).length + ' bekleyenin SİLİNECEK. Dosyadakiler yüklenecek. EMİN MİSİN?\n\n(Önce otomatik yedek alınacak.)')) {
-                makeBackup('Tam yedek geri yüklemeden önce');
-                sales = JSON.parse(JSON.stringify(parsed.sales || []));
-                heldSales = JSON.parse(JSON.stringify(parsed.heldSales || []));
-                if (typeof saveHeld === 'function') saveHeld();
-                if (typeof renderHistory === 'function') renderHistory();
-                if (typeof updateHeldBadge === 'function') updateHeldBadge();
-                if (typeof updateStats === 'function') updateStats();
-                flash('✓ Satış geçmişi (' + sales.length + ') ve bekleyenler (' + heldSales.length + ') yüklendi', true);
-              }
-            }
-          }
-        }
-        if (!Array.isArray(list) || list.length === 0) {
-          alert('❌ Geçerli ürün listesi bulunamadı.');
-          return;
-        }
-        const valid = list.filter(p => p && p.b && p.n && p.p != null);
-        if (valid.length === 0) { alert('❌ Geçerli ürün yok.'); return; }
-
-        // Önizleme: kaç ürün yeni, kaçı güncellenecek, kaç tanede fiyat değişti
-        const byBc = new Map(products.map(p => [String(p.b), p]));
-        let yeni = 0, guncellenen = 0, fiyatDegisen = 0, adDegisen = 0;
-        valid.forEach(p => {
-          const mevcut = byBc.get(String(p.b));
-          if (!mevcut) yeni++;
-          else {
-            guncellenen++;
-            if (Math.abs((mevcut.p||0) - (p.p||0)) > 0.005) fiyatDegisen++;
-            if (String(mevcut.n) !== String(p.n)) adDegisen++;
-          }
-        });
-
-        let mesaj = (isCsv ? '📊 CSV' : '📥 JSON') + ' DOSYASI İÇE AKTARIMI\n\n';
-        mesaj += 'Dosyada ' + valid.length + ' geçerli ürün var.\n';
-        mesaj += 'Mevcut listende ' + products.length + ' ürün var.\n\n';
-        mesaj += '• ' + yeni + ' yeni ürün EKLENECEK\n';
-        mesaj += '• ' + guncellenen + ' mevcut ürün GÜNCELLENECEK\n';
-        if (fiyatDegisen > 0) mesaj += '     └─ Bunlardan ' + fiyatDegisen + ' tanesinin FİYATI değişecek\n';
-        if (adDegisen > 0) mesaj += '     └─ Bunlardan ' + adDegisen + ' tanesinin ADI değişecek\n';
-        mesaj += '\n🛡️ İşlemden önce otomatik yedek alınacak.\n    Yanlış olursa: 💾 Geri Al menüsünden son haline dönebilirsin.\n\n';
-        mesaj += 'Devam edilsin mi?';
-
-        if (!confirm(mesaj)) return;
-        if (!confirm('SON ONAY: ' + valid.length + ' ürün işlenecek. EMİN MİSİN?')) return;
-
-        makeBackup(isCsv ? 'CSV içe aktarmadan önce' : 'JSON içe aktarmadan önce');
-
-        let eklendi = 0, guncellendi = 0;
-        valid.forEach(p => {
-          const mevcut = byBc.get(String(p.b));
-          if (mevcut) { Object.assign(mevcut, p); guncellendi++; }
-          else { products.push(p); byBc.set(String(p.b), p); eklendi++; }
-        });
-        _originalSave();
-        renderProds(); renderQuick(); refreshCategoryDatalist();
-        flash('✓ ' + eklendi + ' yeni, ' + guncellendi + ' güncellendi. Toplam: ' + products.length, true);
-      } catch(err) {
-        alert('❌ Dosya okunamadı: ' + err.message);
+  // Ayrıştırma (riskli kısım) senkron — try/catch burada kalır.
+  let list, parsed = null;
+  try {
+    if (isCsv) {
+      list = parseCsvProducts(txt);
+      if (!list || list.length === 0) {
+        appAlert('❌ CSV okunamadı. Dosyanın ilk satırı "sep=;" ve ikinci satırı "BARKOD;URUN ADI;FIYAT;STOK;KATEGORI;KDV" formatında olmalı.');
+        return;
       }
+    } else {
+      parsed = JSON.parse(txt);
+      list = Array.isArray(parsed) ? parsed : (parsed.products || parsed.urunler || []);
+    }
+  } catch(err) {
+    appAlert('❌ Dosya okunamadı: ' + err.message);
+    return;
+  }
+
+  // ── ÜRÜN İÇE AKTARMA ADIMI — tam-yedek kararı verildikten SONRA çalışır ──
+  function _afterTamYedek(){
+    if (!Array.isArray(list) || list.length === 0) {
+      appAlert('❌ Geçerli ürün listesi bulunamadı.');
+      return;
+    }
+    const valid = list.filter(p => p && p.b && p.n && p.p != null);
+    if (valid.length === 0) { appAlert('❌ Geçerli ürün yok.'); return; }
+
+    // Önizleme: kaç ürün yeni, kaçı güncellenecek, kaç tanede fiyat değişti
+    const byBc = new Map(products.map(p => [String(p.b), p]));
+    let yeni = 0, guncellenen = 0, fiyatDegisen = 0, adDegisen = 0;
+    valid.forEach(p => {
+      const mevcut = byBc.get(String(p.b));
+      if (!mevcut) yeni++;
+      else {
+        guncellenen++;
+        if (Math.abs((mevcut.p||0) - (p.p||0)) > 0.005) fiyatDegisen++;
+        if (String(mevcut.n) !== String(p.n)) adDegisen++;
+      }
+    });
+
+    let mesaj = (isCsv ? '📊 CSV' : '📥 JSON') + ' DOSYASI İÇE AKTARIMI\n\n';
+    mesaj += 'Dosyada ' + valid.length + ' geçerli ürün var.\n';
+    mesaj += 'Mevcut listende ' + products.length + ' ürün var.\n\n';
+    mesaj += '• ' + yeni + ' yeni ürün EKLENECEK\n';
+    mesaj += '• ' + guncellenen + ' mevcut ürün GÜNCELLENECEK\n';
+    if (fiyatDegisen > 0) mesaj += '     └─ Bunlardan ' + fiyatDegisen + ' tanesinin FİYATI değişecek\n';
+    if (adDegisen > 0) mesaj += '     └─ Bunlardan ' + adDegisen + ' tanesinin ADI değişecek\n';
+    mesaj += '\n🛡️ İşlemden önce otomatik yedek alınacak.\n    Yanlış olursa: 💾 Geri Al menüsünden son haline dönebilirsin.\n\n';
+    mesaj += 'Devam edilsin mi?';
+
+    appConfirm({
+      title: (isCsv ? '📊 CSV' : '📥 JSON') + ' içe aktar', bodyHtml: escHtml(mesaj),
+      okText: 'Devam', cancelText: 'Vazgeç',
+      onOk: function(){
+        appConfirm({
+          title: '⚠ SON ONAY',
+          bodyHtml: escHtml('SON ONAY: ' + valid.length + ' ürün işlenecek. EMİN MİSİN?'),
+          okText: 'İçe aktar', cancelText: 'Vazgeç',
+          onOk: function(){
+            makeBackup(isCsv ? 'CSV içe aktarmadan önce' : 'JSON içe aktarmadan önce');
+            let eklendi = 0, guncellendi = 0;
+            valid.forEach(p => {
+              const mevcut = byBc.get(String(p.b));
+              if (mevcut) { Object.assign(mevcut, p); guncellendi++; }
+              else { products.push(p); byBc.set(String(p.b), p); eklendi++; }
+            });
+            _originalSave();
+            renderProds(); renderQuick(); refreshCategoryDatalist();
+            flash('✓ ' + eklendi + ' yeni, ' + guncellendi + ' güncellendi. Toplam: ' + products.length, true);
+            _focusProdSearch();
+          }
+        });
+      }
+    });
+  }
+
+  // ── V7.2 TAM YEDEK: dosyada satışlar/bekleyenler de varsa önce onları sor ──
+  if (!isCsv && parsed && !Array.isArray(parsed) && (Array.isArray(parsed.sales) || Array.isArray(parsed.heldSales))) {
+    const ds = parsed.sales || [];
+    const dh = parsed.heldSales || [];
+    const tamYedekMsg =
+      '📦 TAM YEDEK ALGILANDI\n\n' +
+      'Bu dosya sadece ürün listesi değil, ayrıca:\n' +
+      '  • ' + ds.length + ' satış kaydı\n' +
+      '  • ' + dh.length + ' bekleyen satış\n' +
+      'içeriyor.\n\n' +
+      'Şu anki satış geçmişin: ' + (sales || []).length + ' kayıt\n' +
+      'Şu anki bekleyenler: ' + (heldSales || []).length + ' adet\n\n' +
+      'NE YAPILSIN?\n' +
+      '  EVET = Satış geçmişi ve bekleyenler de DOSYADAKİ ile DEĞİŞTİRİLSİN\n' +
+      '         (mevcut satış geçmişin ÜZERİNE YAZILACAK!)\n' +
+      '  HAYIR = Sadece ürünler güncellensin, satışlara dokunma';
+    appConfirm({
+      title: '📦 Tam yedek algılandı', bodyHtml: escHtml(tamYedekMsg),
+      okText: 'Evet, satışları da yükle', cancelText: 'Hayır, sadece ürünler',
+      onOk: function(){
+        appConfirm({
+          title: '⚠ SON ONAY',
+          bodyHtml: escHtml('SON ONAY: Mevcut ' + (sales || []).length + ' satış kaydın ve ' + (heldSales || []).length + ' bekleyenin SİLİNECEK. Dosyadakiler yüklenecek. EMİN MİSİN?\n\n(Önce otomatik yedek alınacak.)'),
+          okText: 'Yükle', cancelText: 'Vazgeç',
+          onOk: function(){
+            makeBackup('Tam yedek geri yüklemeden önce');
+            sales = JSON.parse(JSON.stringify(parsed.sales || []));
+            heldSales = JSON.parse(JSON.stringify(parsed.heldSales || []));
+            if (typeof saveHeld === 'function') saveHeld();
+            if (typeof renderHistory === 'function') renderHistory();
+            if (typeof updateHeldBadge === 'function') updateHeldBadge();
+            if (typeof updateStats === 'function') updateStats();
+            flash('✓ Satış geçmişi (' + sales.length + ') ve bekleyenler (' + heldSales.length + ') yüklendi', true);
+            _afterTamYedek();   // sonra ürünlere geç
+          },
+          onCancel: function(){ _afterTamYedek(); }   // yükleme iptal → ürünlere yine de geç
+        });
+      },
+      onCancel: function(){ _afterTamYedek(); }        // HAYIR → sadece ürünler
+    });
+    return;
+  }
+
+  // Tam yedek değil → doğrudan ürün içe aktarma
+  _afterTamYedek();
 }
 
 // CSV parser — noktalı virgül ayırıcılı, Türkçe virgüllü sayıları anlar
@@ -3941,7 +4102,7 @@ function applyPercentageZam() {
   const skipZero = document.getElementById('wizZamSkipZero').value === 'skip';
 
   if (isNaN(yuzde) || yuzde === 0) {
-    alert('Geçerli bir zam oranı gir (örn: 15)');
+    appAlert('Geçerli bir zam oranı gir (örn: 15)');
     return;
   }
 
@@ -3953,7 +4114,7 @@ function applyPercentageZam() {
   });
 
   if (targets.length === 0) {
-    alert('Bu koşullara uyan ürün bulunamadı.');
+    appAlert('Bu koşullara uyan ürün bulunamadı.');
     return;
   }
 
@@ -3988,15 +4149,26 @@ function applyPercentageZam() {
     '\n🛡️ Uygulamadan önce otomatik yedek alınacak.\n\n' +
     'Uygulansın mı?';
 
-  if (!confirm(mesaj)) return;
-  if (!confirm('SON ONAY: ' + targets.length + ' ürünün fiyatı değişecek. EMİN MİSİN?')) return;
-
-  makeBackup('Yüzde zam öncesi (%' + yuzde + ' — ' + cat + ')');
-  changes.forEach(c => { c.p.p = c.new; });
-  _originalSave();
-  renderProds(); renderQuick();
-  document.getElementById('priceWizOverlay')?.remove();
-  flash('✓ ' + targets.length + ' ürüne %' + yuzde + ' zam uygulandı (yedek alındı)', true);
+  appConfirm({
+    title: '📈 Zam önizlemesi', bodyHtml: escHtml(mesaj),
+    okText: 'Uygula', cancelText: 'Vazgeç',
+    onOk: function(){
+      appConfirm({
+        title: '⚠ SON ONAY',
+        bodyHtml: escHtml('SON ONAY: ' + targets.length + ' ürünün fiyatı değişecek. EMİN MİSİN?'),
+        okText: 'Zammı uygula', cancelText: 'Vazgeç',
+        onOk: function(){
+          makeBackup('Yüzde zam öncesi (%' + yuzde + ' — ' + cat + ')');
+          changes.forEach(c => { c.p.p = c.new; });
+          _originalSave();
+          renderProds(); renderQuick();
+          document.getElementById('priceWizOverlay')?.remove();
+          flash('✓ ' + targets.length + ' ürüne %' + yuzde + ' zam uygulandı (yedek alındı)', true);
+          _focusProdSearch();
+        }
+      });
+    }
+  });
 }
 
 
@@ -4004,13 +4176,13 @@ function applyPercentageZam() {
 // PDF okuyucu (pdf.js) CDN'den yüklü, offline ise uyarı
 async function processPdfForPrices() {
   if (typeof pdfjsLib === 'undefined') {
-    alert('❌ PDF kütüphanesi yüklenmedi.\n\nİnternet bağlantın yok veya CDN engellenmiş olabilir. İnternete bağlıyken programı bir kez aç (kütüphane tarayıcıda önbelleğe alınır), sonra offline çalışabilir.\n\nAlternatif: Yol 1 (Hızlı Ekle) ile PDF\'e bakıp barkod okutarak güncelleyebilirsin.');
+    appAlert('❌ PDF kütüphanesi yüklenmedi.\n\nİnternet bağlantın yok veya CDN engellenmiş olabilir. İnternete bağlıyken programı bir kez aç (kütüphane tarayıcıda önbelleğe alınır), sonra offline çalışabilir.\n\nAlternatif: Yol 1 (Hızlı Ekle) ile PDF\'e bakıp barkod okutarak güncelleyebilirsin.');
     return;
   }
   const fileInp = document.getElementById('wizPdfFile');
   const f = fileInp?.files?.[0];
   if (!f) {
-    alert('Önce PDF dosyası seç.');
+    appAlert('Önce PDF dosyası seç.');
     return;
   }
 
@@ -4047,7 +4219,7 @@ async function processPdfForPrices() {
     loading.remove();
 
     if (allText.trim().length === 0) {
-      alert('❌ PDF\'ten metin çıkarılamadı.\n\nBu muhtemelen taranmış (fotoğraf) bir PDF. Metin içeren dijital PDF gerekli. Toptancına gerçek PDF (Word\'den veya Excel\'den çıkarılmış) iste.');
+      appAlert('❌ PDF\'ten metin çıkarılamadı.\n\nBu muhtemelen taranmış (fotoğraf) bir PDF. Metin içeren dijital PDF gerekli. Toptancına gerçek PDF (Word\'den veya Excel\'den çıkarılmış) iste.');
       return;
     }
 
@@ -4055,14 +4227,14 @@ async function processPdfForPrices() {
     const pairs = extractBarcodePricePairs(allItems, allText);
 
     if (pairs.length === 0) {
-      alert('❌ PDF içinde barkod + fiyat çifti bulunamadı.\n\nKontrol et:\n• PDF\'te 8-13 haneli barkod sayıları var mı?\n• Barkodların yanında fiyat (örn. 25,50 TL) yazıyor mu?\n\nEğer varsa ama bulunamıyorsa PDF düzeni çok farklı olabilir. Bir ekran görüntüsü gönderirsen senin için özel çözeriz.');
+      appAlert('❌ PDF içinde barkod + fiyat çifti bulunamadı.\n\nKontrol et:\n• PDF\'te 8-13 haneli barkod sayıları var mı?\n• Barkodların yanında fiyat (örn. 25,50 TL) yazıyor mu?\n\nEğer varsa ama bulunamıyorsa PDF düzeni çok farklı olabilir. Bir ekran görüntüsü gönderirsen senin için özel çözeriz.');
       return;
     }
 
     showPdfReviewModal(pairs, f.name);
   } catch(err) {
     loading.remove();
-    alert('❌ PDF okunurken hata: ' + err.message);
+    appAlert('❌ PDF okunurken hata: ' + err.message);
   }
 }
 
@@ -4322,14 +4494,26 @@ function applyPdfUpdates() {
   if (!window._pdfReviewRows) return;
   const toApply = window._pdfReviewRows.filter(r => r.selected && r.matched);
   if (toApply.length === 0) {
-    alert('Güncellenecek ürün seçmedin.');
+    appAlert('Güncellenecek ürün seçmedin.');
     return;
   }
 
   const mesaj = '📄 PDF Güncelleme\n\n' + toApply.length + ' ürünün fiyatı güncellenecek.\n\n🛡️ Önce otomatik yedek alınacak.\n\nDevam?';
-  if (!confirm(mesaj)) return;
-  if (!confirm('SON ONAY: ' + toApply.length + ' ürün güncellenecek. EMİN MİSİN?')) return;
+  appConfirm({
+    title: '📄 PDF güncelleme', bodyHtml: escHtml(mesaj),
+    okText: 'Devam', cancelText: 'Vazgeç',
+    onOk: function(){
+      appConfirm({
+        title: '⚠ SON ONAY',
+        bodyHtml: escHtml('SON ONAY: ' + toApply.length + ' ürün güncellenecek. EMİN MİSİN?'),
+        okText: 'Güncelle', cancelText: 'Vazgeç',
+        onOk: function(){ _applyPdfUpdatesConfirmed(toApply); }
+      });
+    }
+  });
+}
 
+function _applyPdfUpdatesConfirmed(toApply){
   makeBackup('PDF güncellemesinden önce');
 
   const prodByBc = new Map(products.map(p => [String(p.b), p]));
@@ -4534,34 +4718,44 @@ function qaSubmit() {
     document.getElementById('qaP').focus();
     return;
   }
-  if (existing) {
-    // Zaten varsa → güncelleme modu: fiyat/stok/kategori/KDV güncelle
-    if (!confirm('Bu barkod zaten kayıtlı:\n\n' + existing.n + ' (' + fmt(existing.p) + ')\n\nMevcut ürünü yeni bilgilerle GÜNCELLEMEK ister misin?\n\n• Yeni ad: ' + n + '\n• Yeni fiyat: ' + fmt(p) + '\n• Yeni stok: ' + s + '\n• Kategori: ' + c + '\n• KDV: %' + k)) {
-      document.getElementById('qaB').focus();
-      document.getElementById('qaB').select();
-      return;
-    }
-    makeBackup('Hızlı ekleme (güncelleme öncesi)');
-    existing.n = n; existing.p = p; existing.s = s; existing.c = c; existing.k = k;
-    _originalSave();
-    renderProds(); renderQuick(); refreshCategoryDatalist();
-    if (log) log.innerHTML = `<div style="color:#E67E22;padding:2px 0">🔄 ${n} güncellendi (${fmt(p)}) • Toplam: <b>${products.length}</b></div>` + log.innerHTML;
-  } else {
-    // Yeni ürün ekle
-    makeBackup('Hızlı ekleme (eklemeden önce)');
-    products.push({b, n, p, s, c, k});
-    _originalSave();
-    renderProds(); renderQuick(); refreshCategoryDatalist();
-    if (log) log.innerHTML = `<div style="color:var(--green);padding:2px 0">✓ ${n} (${fmt(p)}) eklendi • Toplam: <b>${products.length}</b></div>` + log.innerHTML;
+  // Formu sıfırla, yeniden barkoda odaklan (KDV ve kategori aynı kalır — seri ekleme kolaylaşır)
+  function _qaResetFields(){
+    document.getElementById('qaB').value = '';
+    document.getElementById('qaN').value = '';
+    document.getElementById('qaP').value = '';
+    document.getElementById('qaS').value = '0';
+    document.getElementById('qaB').focus();
   }
 
-  // Sıfırla, yeniden barkoda odaklan
-  document.getElementById('qaB').value = '';
-  document.getElementById('qaN').value = '';
-  document.getElementById('qaP').value = '';
-  document.getElementById('qaS').value = '0';
-  // KDV ve kategori aynı kalır — seri ekleme kolaylaşır
-  document.getElementById('qaB').focus();
+  if (existing) {
+    // Zaten varsa → güncelleme modu: bloklamayan onay, sonra güncelle
+    appConfirm({
+      title: 'Barkod zaten kayıtlı',
+      bodyHtml: escHtml('Bu barkod zaten kayıtlı:\n\n' + existing.n + ' (' + fmt(existing.p) + ')\n\nMevcut ürünü yeni bilgilerle GÜNCELLEMEK ister misin?\n\n• Yeni ad: ' + n + '\n• Yeni fiyat: ' + fmt(p) + '\n• Yeni stok: ' + s + '\n• Kategori: ' + c + '\n• KDV: %' + k),
+      okText: '🔄 Güncelle', cancelText: 'Vazgeç',
+      onOk: function(){
+        makeBackup('Hızlı ekleme (güncelleme öncesi)');
+        existing.n = n; existing.p = p; existing.s = s; existing.c = c; existing.k = k;
+        _originalSave();
+        renderProds(); renderQuick(); refreshCategoryDatalist();
+        if (log) log.innerHTML = `<div style="color:#E67E22;padding:2px 0">🔄 ${n} güncellendi (${fmt(p)}) • Toplam: <b>${products.length}</b></div>` + log.innerHTML;
+        _qaResetFields();
+      },
+      onCancel: function(){
+        document.getElementById('qaB').focus();
+        document.getElementById('qaB').select();
+      }
+    });
+    return;   // async — gerisi onOk içinde tamamlanır
+  }
+
+  // Yeni ürün ekle (senkron)
+  makeBackup('Hızlı ekleme (eklemeden önce)');
+  products.push({b, n, p, s, c, k});
+  _originalSave();
+  renderProds(); renderQuick(); refreshCategoryDatalist();
+  if (log) log.innerHTML = `<div style="color:var(--green);padding:2px 0">✓ ${n} (${fmt(p)}) eklendi • Toplam: <b>${products.length}</b></div>` + log.innerHTML;
+  _qaResetFields();
 }
 
 // ── INIT ──

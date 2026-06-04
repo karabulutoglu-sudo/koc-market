@@ -3307,18 +3307,32 @@ async function downloadBackup(idx) {
 }
 
 // ── DIŞA AKTAR — JSON veya Excel (CSV) seçtir ──
+// NOT: Electron prompt() desteklemez (hata fırlatır) → özel modal ile format seçtir.
 function exportProductsJson() {
-  // Seçenek sunalım: JSON (tam yedek) veya CSV (Excel'de açılır, zam için kullanılır)
-  const choice = prompt(
-    'Hangi formatta kaydetmek istiyorsun?\n\n' +
-    '1 = JSON (tam yedek — ⬆ Dosyadan Getir ile geri yüklenir)\n' +
-    '2 = CSV / Excel (fiyat güncellemesi için; Excel\'de açıp fiyatları değiştirip geri yükleyebilirsin)\n\n' +
-    'Sayıyı yaz (1 veya 2):', '2'
-  );
-  if (!choice) return;
-  if (choice.trim() === '1') return doExportJson();
-  if (choice.trim() === '2') return doExportCsv();
-  alert('Geçersiz seçim. Sadece 1 veya 2 yazmalısın.');
+  const eski = document.getElementById('exportFormatOverlay');
+  if (eski) eski.remove();
+  const ov = document.createElement('div');
+  ov.id = 'exportFormatOverlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(3px)';
+  ov.innerHTML = `
+    <div style="background:#fff;border-radius:14px;max-width:440px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3);font-family:Arial,sans-serif;overflow:hidden">
+      <div style="padding:18px 22px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between">
+        <h3 style="margin:0;font-size:17px;color:#0f172a;font-weight:800">⬇ Dosyaya Kaydet — Format Seç</h3>
+        <button onclick="document.getElementById('exportFormatOverlay').remove()" style="background:none;border:none;font-size:24px;color:#64748b;cursor:pointer;line-height:1;padding:0 4px">×</button>
+      </div>
+      <div style="padding:18px 22px;display:flex;flex-direction:column;gap:12px">
+        <button onclick="document.getElementById('exportFormatOverlay').remove();doExportJson()" style="text-align:left;padding:14px 16px;border-radius:10px;border:1.5px solid #2E8B57;background:rgba(46,139,87,.07);color:#15803d;font-weight:700;font-size:14px;cursor:pointer">
+          📦 JSON — Tam Yedek
+          <div style="font-weight:500;font-size:12px;color:#166534;margin-top:3px">Ürünler + satışlar + bekleyenler. ⬆ Dosyadan Getir ile geri yüklenir.</div>
+        </button>
+        <button onclick="document.getElementById('exportFormatOverlay').remove();doExportCsv()" style="text-align:left;padding:14px 16px;border-radius:10px;border:1.5px solid #6C3483;background:rgba(108,52,131,.07);color:#6C3483;font-weight:700;font-size:14px;cursor:pointer">
+          📊 CSV / Excel
+          <div style="font-weight:500;font-size:12px;color:#581c87;margin-top:3px">Excel'de açılır. Fiyat güncellemesi (zam) için idealdir.</div>
+        </button>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  ov.addEventListener('click', function(e){ if (e.target === ov) ov.remove(); });
 }
 
 // Yedeği diske kaydet — Electron'da gerçek "Farklı Kaydet" penceresi açılır,

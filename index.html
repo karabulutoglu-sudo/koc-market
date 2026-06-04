@@ -649,11 +649,54 @@ input::placeholder { color: var(--soft); }
 </div>
 
 <script>
+// ═══════════════════════════════════════════════════════════════════
+// DİSK DEPOLAMA KÖPRÜSÜ + MİGRASYON  (Electron → koc-data.json)
+// ═══════════════════════════════════════════════════════════════════
+// MİGRASYON (ilk açılışta bir kez): disk deposu BOŞSA ama localStorage'da
+// veri VARSA, tüm 'koc-' anahtarlarını diske kopyala. localStorage SİLİNMEZ —
+// güvenlik ağı olarak durur. Bir bayrakla tekrar çalışması engellenir.
+(function migrateLocalStorageToDisk(){
+  if (!window.kocStore) return;                                    // Tarayıcıda açıldı → migrasyon yok
+  try {
+    if (window.kocStore.read('koc-migrated-to-disk-v1')) return;   // Zaten taşınmış
+    if (window.kocStore.read('koc-prods')) {                       // Disk zaten dolu → işaretle, çık
+      window.kocStore.write('koc-migrated-to-disk-v1', '1');
+      return;
+    }
+    if (!window.localStorage.getItem('koc-prods')) {               // Taşınacak veri yok (temiz kurulum)
+      window.kocStore.write('koc-migrated-to-disk-v1', '1');
+      return;
+    }
+    let copied = 0;
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (k && k.indexOf('koc-') === 0) {
+        window.kocStore.write(k, window.localStorage.getItem(k));
+        copied++;
+      }
+    }
+    window.kocStore.write('koc-migrated-to-disk-v1', '1');
+    console.log('[MİGRASYON] localStorage → disk: ' + copied + ' anahtar kopyalandı (localStorage silinmedi, yedek olarak duruyor).');
+  } catch (e) {
+    console.error('[MİGRASYON] hata:', e);
+  }
+})();
+
+// LS: localStorage ile birebir uyumlu köprü. kocStore varsa diske, yoksa
+// (tarayıcı) gerçek localStorage'a düşer. Tüm kod artık LS üzerinden çalışır.
+const LS = (window.kocStore ? {
+  getItem(k){ const v = window.kocStore.read(k); return (v === undefined ? null : v); },
+  setItem(k, v){ return window.kocStore.write(k, String(v)); },
+  removeItem(k){ return window.kocStore.remove(k); },
+  key(i){ const ks = window.kocStore.keys(); return (i >= 0 && i < ks.length) ? ks[i] : null; },
+  get length(){ return window.kocStore.keys().length; }
+} : window.localStorage);
+
 // ── ÜLKER ÜRÜN LİSTESİ — V6 GÜNCELLEME (Claude) ──
 // Önceki sürümlerden farkı: koc-prods'u ÜSTÜNE YAZAR, çöp/test ürünleri atar.
 // Satış geçmişi ve KDV ayarları aynen korunur.
 (function(){
-  if (localStorage.getItem('koc-ulker-v6-yuklendi')) return;
+  if (LS.getItem('koc-ulker-v6-yuklendi')) return;
   const ULKER_URUNLER =[
 {"b":"8683508112073","n":"GO AHEAD YER FISTIKLI PROTEİN BAR","p":60.0,"s":0,"c":"Bar"},
 {"b":"8683508112066","n":"GO AHEAD ÜÇ KATLI LEZZET","p":60.0,"s":0,"c":"Bar"},
@@ -934,8 +977,8 @@ input::placeholder { color: var(--soft); }
 {"b":"8690504180920","n":"Ülker Pul Çikolata Beyaz 100Grx12","p":140.0,"s":0,"c":"Çikolata"},
 {"b":"8690766180805","n":"Ülker Pul Çikolata Sütlü 100Grx12","p":140.0,"s":0,"c":"Çikolata"}
 ];
-  localStorage.setItem('koc-prods', JSON.stringify(ULKER_URUNLER));
-  localStorage.setItem('koc-ulker-v6-yuklendi', '1');
+  LS.setItem('koc-prods', JSON.stringify(ULKER_URUNLER));
+  LS.setItem('koc-ulker-v6-yuklendi', '1');
   // Eski fabrika/test ürünleri kaldırıldı, tamamen Ülker listesiyle başlıyor
 })();
 
@@ -943,10 +986,10 @@ input::placeholder { color: var(--soft); }
 // Bisküvi/Çikolata/Kraker/Bar/Gofret/Kek/Şekerleme gibi eski alt kategoriler
 // → tek "Atıştırmalık" kategorisinde toplanır. Bir kere çalışır.
 (function(){
-  if (localStorage.getItem('koc-kat-birlesim-v1')) return;
+  if (LS.getItem('koc-kat-birlesim-v1')) return;
   const ESKI_ALT = ['Bisküvi', 'Çikolata', 'Kraker', 'Bar', 'Gofret', 'Kek', 'Şekerleme',
                     'Fırın', 'Süt', 'Gıda', 'Temizlik', 'Diğer'];
-  const raw = localStorage.getItem('koc-prods');
+  const raw = LS.getItem('koc-prods');
   if (raw) {
     try {
       const prs = JSON.parse(raw);
@@ -954,10 +997,10 @@ input::placeholder { color: var(--soft); }
       for (const p of prs) {
         if (ESKI_ALT.includes(p.c)) { p.c = 'Atıştırmalık'; cnt++; }
       }
-      if (cnt > 0) localStorage.setItem('koc-prods', JSON.stringify(prs));
+      if (cnt > 0) LS.setItem('koc-prods', JSON.stringify(prs));
     } catch(e){}
   }
-  localStorage.setItem('koc-kat-birlesim-v1', '1');
+  LS.setItem('koc-kat-birlesim-v1', '1');
 })();
 
 // ── DATA ──
@@ -991,14 +1034,14 @@ function safeLoadJSON(key, fallback) {
   ];
   for (const c of candidates) {
     try {
-      const raw = localStorage.getItem(c.k);
+      const raw = LS.getItem(c.k);
       if (raw == null || raw === '') continue;
       const parsed = JSON.parse(raw);
       if (parsed == null) continue;
       // Ana anahtar bozuk ama yedekten kurtarıldıysa → ana'yı düzelt
       if (c.src !== 'ana') {
         console.warn('[VERI KORUMA] "' + key + '" anahtarı bozuk veya boştu, "' + c.src + '" yedeğinden kurtarıldı.');
-        try { localStorage.setItem(key, raw); } catch(e) {}
+        try { LS.setItem(key, raw); } catch(e) {}
         // Kullanıcıya bildir (sayfa yüklendikten sonra toast olarak)
         setTimeout(() => {
           try {
@@ -1026,14 +1069,14 @@ function safeSaveJSON(key, value) {
     return false;
   }
   try {
-    localStorage.setItem(key, json);
+    LS.setItem(key, json);
     // Shadow yedeği (eş zamanlı). Emergency yedeği daha seyrek (5 dakikada bir).
-    try { localStorage.setItem(key + '-shadow', json); } catch(e) {}
-    const lastEm = parseInt(localStorage.getItem(key + '-emergency-ts') || '0');
+    try { LS.setItem(key + '-shadow', json); } catch(e) {}
+    const lastEm = parseInt(LS.getItem(key + '-emergency-ts') || '0');
     if (Date.now() - lastEm > 5 * 60 * 1000) {
       try {
-        localStorage.setItem(key + '-emergency', json);
-        localStorage.setItem(key + '-emergency-ts', String(Date.now()));
+        LS.setItem(key + '-emergency', json);
+        LS.setItem(key + '-emergency-ts', String(Date.now()));
       } catch(e) {}
     }
     // v13: hafıza göstergesi güncelle
@@ -1066,9 +1109,9 @@ function checkStorageQuota(silent) {
     // Eski tarayıcılar için kaba tahmin: tüm anahtarların byte uzunluğunu topla
     let total = 0;
     try {
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        const v = localStorage.getItem(k) || '';
+      for (let i = 0; i < LS.length; i++) {
+        const k = LS.key(i);
+        const v = LS.getItem(k) || '';
         total += k.length + v.length;
       }
     } catch(e) { return; }
@@ -1218,9 +1261,9 @@ function _anahtarSinifi(k) {
 function _hafizaKullanim() {
   let toplam = 0;
   let detay = {};
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i);
-    const v = localStorage.getItem(k) || '';
+  for (let i = 0; i < LS.length; i++) {
+    const k = LS.key(i);
+    const v = LS.getItem(k) || '';
     const boyut = (k.length + v.length) * 2;
     toplam += boyut;
     detay[k] = boyut;
@@ -1320,7 +1363,7 @@ function hafizaModalAc() {
   const yetimMB = (k.yetimToplam / 1024 / 1024).toFixed(2);
   const digerSayi = Object.keys(k.diger).length;
   const digerMB = (k.digerToplam / 1024 / 1024).toFixed(2);
-  const backups = JSON.parse(localStorage.getItem('koc-backups') || '[]');
+  const backups = JSON.parse(LS.getItem('koc-backups') || '[]');
 
   let durum, durumRenk, durumIkon;
   if (yuzde < 70) { durum = 'Sağlıklı'; durumRenk = '#16a34a'; durumIkon = '✅'; }
@@ -1429,7 +1472,7 @@ function hafizaYetimSil() {
   if (!confirm(`Şu yetim anahtarlar silinecek:\n\n${liste}\n\nBu Koç Market verilerini ETKİLEMEZ — sadece eski/bilinmeyen anahtarları siler. Devam edilsin mi?`)) return;
   let silinen = 0;
   for (const a of yetimAnahtarlar) {
-    try { localStorage.removeItem(a); silinen++; } catch (e) {}
+    try { LS.removeItem(a); silinen++; } catch (e) {}
   }
   document.getElementById('mHafiza')?.remove();
   hafizaGoster();
@@ -1438,13 +1481,13 @@ function hafizaYetimSil() {
 }
 
 function hafizaTemizleYari() {
-  const backups = JSON.parse(localStorage.getItem('koc-backups') || '[]');
+  const backups = JSON.parse(LS.getItem('koc-backups') || '[]');
   if (backups.length === 0) { flash('ℹ️ Silinecek yedek yok', true); return; }
   if (!confirm(`En eski ${Math.ceil(backups.length / 2)} yedek silinecek, en yeni ${Math.floor(backups.length / 2)} adet korunacak. Devam edilsin mi?`)) return;
   try {
     const yenisi = backups.slice(0, Math.floor(backups.length / 2));
-    if (yenisi.length === 0) localStorage.removeItem('koc-backups');
-    else localStorage.setItem('koc-backups', JSON.stringify(yenisi));
+    if (yenisi.length === 0) LS.removeItem('koc-backups');
+    else LS.setItem('koc-backups', JSON.stringify(yenisi));
     document.getElementById('mHafiza')?.remove();
     hafizaGoster();
     flash(`✅ ${backups.length - yenisi.length} eski yedek silindi. Şimdi: %${_hafizaKullanim().yuzde}`, true);
@@ -1456,11 +1499,11 @@ function hafizaTemizleYari() {
 function hafizaTemizleHepsi() {
   if (!confirm('TÜM otomatik yedekler silinecek. Ürün ve satış verin etkilenmez ama 💾 Geri Al menüsü boşalır. Bilgisayara yedek aldın mı? Devam edilsin mi?')) return;
   try {
-    localStorage.removeItem('koc-backups');
-    localStorage.removeItem('koc-prods-emergency');
-    localStorage.removeItem('koc-prods-emergency-ts');
-    localStorage.removeItem('koc-sales-emergency');
-    localStorage.removeItem('koc-sales-emergency-ts');
+    LS.removeItem('koc-backups');
+    LS.removeItem('koc-prods-emergency');
+    LS.removeItem('koc-prods-emergency-ts');
+    LS.removeItem('koc-sales-emergency');
+    LS.removeItem('koc-sales-emergency-ts');
     document.getElementById('mHafiza')?.remove();
     hafizaGoster();
     flash(`✅ Tüm yedekler silindi. Şimdi: %${_hafizaKullanim().yuzde}`, true);
@@ -1472,11 +1515,11 @@ function hafizaTemizleHepsi() {
 function hafizaProaktifKontrol() {
   const k = _hafizaKullanim();
   if (k.yuzde >= 85) {
-    const backups = JSON.parse(localStorage.getItem('koc-backups') || '[]');
+    const backups = JSON.parse(LS.getItem('koc-backups') || '[]');
     if (backups.length >= 2) {
       const yenisi = backups.slice(0, Math.floor(backups.length / 2));
       try {
-        localStorage.setItem('koc-backups', JSON.stringify(yenisi));
+        LS.setItem('koc-backups', JSON.stringify(yenisi));
         const yeni = _hafizaKullanim();
         setTimeout(() => {
           alert('🧹 OTOMATİK TEMİZLİK\n\nHafıza %' + k.yuzde + ' doluydu. ' + (backups.length - yenisi.length) + ' eski otomatik yedek temizlendi. Şimdi: %' + yeni.yuzde + '\n\nDetay için ÜRÜNLER sekmesindeki "💾 Hafıza" butonunu kullan.');
@@ -2513,16 +2556,37 @@ function focusBarcode() {
     if (!active || active === document.body || active.tagName !== 'INPUT') inp.focus();
   }, 20);
 }
-// Sık sık odak kontrolü — barkod okuyucu başlamadan önce odağın hazır olmasını sağlar
-setInterval(focusBarcode, 300);
+// NOT: Sürekli yoklama (setInterval) KALDIRILDI — odak artık sadece gerçek
+// olaylarda barkoda verilir (satış sekmesi açılınca, modal kapanınca, satış
+// tamamlanınca, sepete ürün eklenince, pencere odak kazanınca).
+// Bu çağrılar zaten kodun ilgili yerlerinde focusBarcode() ile yapılıyor.
+
 // Sayfa odağını geri kazanınca barkoda dön
 window.addEventListener('focus', focusBarcode);
-// Satış ekranında herhangi bir yere tıklanınca barkoda dön (buton ve input hariç)
-document.addEventListener('click', function(e){
-  const tag = (e.target.tagName || '').toLowerCase();
-  if (tag === 'button' || tag === 'input' || tag === 'select' || tag === 'textarea' || tag === 'label' || e.target.closest('.modal-overlay, .price-overlay, #editModal, .import-modal')) return;
-  focusBarcode();
-});
+
+// Barkod kutusu odağı kaybedince: kısa gecikmeyle "boşa mı gitti" diye bak.
+// Kullanıcı bilerek başka bir kutuya/butona tıkladıysa DOKUNMA; ama odak
+// hiçbir yere (document.body) gittiyse barkoda geri dön.
+(function attachBarcodeBlurGuard(){
+  const inp = document.getElementById('barcodeInput');
+  if (!inp) return;
+  inp.addEventListener('blur', function(){
+    setTimeout(() => {
+      const saleActive = document.getElementById('sec-sale').classList.contains('active');
+      const overlayOpen = document.querySelector('.modal-overlay.show, .price-overlay.show, .import-modal.show, #editModal:not(.hidden)');
+      if (!saleActive || overlayOpen || paying) return;
+      const active = document.activeElement;
+      // Kullanıcı bilerek başka bir input/textarea/select/button'a geçtiyse karışma
+      if (active && active !== document.body && active !== inp) {
+        const tag = active.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+            tag === 'BUTTON' || tag === 'A' || active.isContentEditable) return;
+      }
+      // Odak boşa gitti (document.body / null) → barkoda geri dön
+      inp.focus();
+    }, 150);
+  });
+})();
 // YENİ: Global tuş basımı — odak doğru yerde değilse barkod kutusuna yönlendir
 document.addEventListener('keydown', function(e){
   // Modifier tuşları, fonksiyon tuşları atla
@@ -2954,16 +3018,16 @@ function saglikKontrolu() {
   if (!Array.isArray(sales)) sales = [];
 
   // 3) Son DOSYA yedeğini kontrol et
-  const sonYedek = parseInt(localStorage.getItem('koc-son-yedek')) || 0;
+  const sonYedek = parseInt(LS.getItem('koc-son-yedek')) || 0;
   const simdi = Date.now();
   const birGun = 86400000;
   const gunFark = Math.floor((simdi - sonYedek) / birGun);
 
   // 4) Bugün ilk kez açıldıysa, kullanıcıyı bilgilendir
-  const sonAcilis = localStorage.getItem('koc-son-acilis-gunu');
+  const sonAcilis = LS.getItem('koc-son-acilis-gunu');
   const bugun = _bugunKey();
   const ilkAcilisBugun = sonAcilis !== bugun;
-  localStorage.setItem('koc-son-acilis-gunu', bugun);
+  LS.setItem('koc-son-acilis-gunu', bugun);
 
   // 5) Çok eski dosya yedeği varsa GÖRSEL UYARI (toast değil, modal)
   if (products.length > 0 && (gunFark > 7 || sonYedek === 0)) {
@@ -3038,7 +3102,7 @@ function _hemenYedekAl() {
     a.download = 'koc-tam-yedek-' + stamp + '.json';
     a.click();
     setTimeout(()=>URL.revokeObjectURL(url), 1000);
-    localStorage.setItem('koc-son-yedek', String(Date.now()));
+    LS.setItem('koc-son-yedek', String(Date.now()));
     document.getElementById('yedekHatirlatmaOverlay')?.remove();
     flash('✓ Tam yedek indirildi (' + products.length + ' ürün, ' + (sales || []).length + ' satış)', true);
   } catch(e) {
@@ -3047,18 +3111,6 @@ function _hemenYedekAl() {
 }
 
 setTimeout(saglikKontrolu, 3000);
-
-// Sayfa kapatılırken uyar (uzun süre dosya yedeği alınmadıysa)
-window.addEventListener('beforeunload', function(e){
-  if (products.length > 0) {
-    const sonYedek = parseInt(localStorage.getItem('koc-son-yedek')) || 0;
-    const birHafta = 7*86400000;
-    if (Date.now() - sonYedek > birHafta) {
-      e.preventDefault();
-      e.returnValue = 'Uzun süredir dosya yedeği almadın! Çıkmadan önce yedek al.';
-    }
-  }
-});
 
 // Periyodik kota kontrolü (10 dakikada bir, sessizce)
 setInterval(() => checkStorageQuota(false), 10 * 60 * 1000);
@@ -3340,7 +3392,7 @@ function renderHistory() {
 // ── TEK SEFERLİK KDV MİGRATIONU ──
 // Mevcut ürünlere kategoriye göre KDV oranı ata (k alanı yoksa)
 (function migrateKdv(){
-  if (localStorage.getItem('koc-kdv-migrated-v1')) return;
+  if (LS.getItem('koc-kdv-migrated-v1')) return;
   let updated = 0;
   products.forEach(p => {
     if (p.k == null) {
@@ -3352,7 +3404,7 @@ function renderHistory() {
     save();
     console.log('[KDV] ' + updated + ' ürüne otomatik KDV atandı');
   }
-  localStorage.setItem('koc-kdv-migrated-v1', '1');
+  LS.setItem('koc-kdv-migrated-v1', '1');
 })();
 
 // ══════════════════════════════════════════════════════════
@@ -3365,9 +3417,9 @@ function renderHistory() {
 // Sadece tek sefer çalışır (flag: koc-kdv-sigara-fix-v10).
 // ══════════════════════════════════════════════════════════
 (function fixSigaraKdvV10(){
-  if (localStorage.getItem('koc-kdv-sigara-fix-v10')) return;
+  if (LS.getItem('koc-kdv-sigara-fix-v10')) return;
   if (!products || products.length === 0) {
-    localStorage.setItem('koc-kdv-sigara-fix-v10', '1');
+    LS.setItem('koc-kdv-sigara-fix-v10', '1');
     return;
   }
 
@@ -3378,7 +3430,7 @@ function renderHistory() {
 
   if (hedef.length === 0) {
     // Hepsi zaten %0 — düzeltilecek bir şey yok, flag set et ve çık
-    localStorage.setItem('koc-kdv-sigara-fix-v10', '1');
+    LS.setItem('koc-kdv-sigara-fix-v10', '1');
     return;
   }
 
@@ -3399,7 +3451,7 @@ function renderHistory() {
       save();
       if (typeof renderProds === 'function') renderProds();
       if (typeof renderQuick === 'function') renderQuick();
-      localStorage.setItem('koc-kdv-sigara-fix-v10', '1');
+      LS.setItem('koc-kdv-sigara-fix-v10', '1');
 
       // Bilgilendirme — non-modal, yumuşak bildirim
       if (typeof flash === 'function') {
@@ -3442,7 +3494,7 @@ const MAX_BACKUPS = 10;  // v13: 30'dan 10'a düşürüldü - localStorage tasar
 
 function makeBackup(reason) {
   try {
-    const backups = JSON.parse(localStorage.getItem('koc-backups') || '[]');
+    const backups = JSON.parse(LS.getItem('koc-backups') || '[]');
     const snap = {
       ts: Date.now(),
       reason: reason || 'Otomatik',
@@ -3459,12 +3511,12 @@ function makeBackup(reason) {
     // Fazlasını at
     while (backups.length > MAX_BACKUPS) backups.pop();
     try {
-      localStorage.setItem('koc-backups', JSON.stringify(backups));
+      LS.setItem('koc-backups', JSON.stringify(backups));
     } catch(quotaErr) {
       // Yedek listesi kotayı doldurduysa: yarı yarıya kırp ve tekrar dene
       while (backups.length > Math.floor(MAX_BACKUPS / 2)) backups.pop();
       try {
-        localStorage.setItem('koc-backups', JSON.stringify(backups));
+        LS.setItem('koc-backups', JSON.stringify(backups));
         if (typeof flash === 'function') flash('⚠ Yedek alanı dolduğu için eski yedekler kırpıldı', false);
       } catch(e2) {
         console.warn('Yedek kırpılsa bile sığmadı:', e2);
@@ -3488,7 +3540,7 @@ save = function() {
 
 // İlk yüklemede bir yedek al (çok eski değilse)
 setTimeout(() => {
-  const bs = JSON.parse(localStorage.getItem('koc-backups') || '[]');
+  const bs = JSON.parse(LS.getItem('koc-backups') || '[]');
   if (bs.length === 0 || (Date.now() - bs[0].ts) > 3600000) {
     makeBackup('Açılış');
   }
@@ -3501,7 +3553,7 @@ setTimeout(() => {
 // ║  Yöneticisinden geri yüklenebilir.                     ║
 // ══════════════════════════════════════════════════════════
 (function freshStartV8(){
-  if (localStorage.getItem('koc-fresh-start-v8')) return;
+  if (LS.getItem('koc-fresh-start-v8')) return;
   try {
     const hadSales = Array.isArray(sales) && sales.length > 0;
     const hadHeld  = Array.isArray(heldSales) && heldSales.length > 0;
@@ -3518,7 +3570,7 @@ setTimeout(() => {
     safeSaveJSON('koc-held', heldSales);
 
     // Bayrağı koy — bir daha çalışmasın
-    localStorage.setItem('koc-fresh-start-v8', String(Date.now()));
+    LS.setItem('koc-fresh-start-v8', String(Date.now()));
 
     // UI tazele
     if (typeof updateHeldBadge === 'function') updateHeldBadge();
@@ -3539,7 +3591,7 @@ setTimeout(() => {
 
 // ── YEDEK YÖNETİCİSİ ──
 function openBackupManager() {
-  const backups = JSON.parse(localStorage.getItem('koc-backups') || '[]');
+  const backups = JSON.parse(LS.getItem('koc-backups') || '[]');
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay show';
   overlay.id = 'backupMgrOverlay';
@@ -3577,7 +3629,7 @@ function openBackupManager() {
 }
 
 function restoreBackup(idx) {
-  const backups = JSON.parse(localStorage.getItem('koc-backups') || '[]');
+  const backups = JSON.parse(LS.getItem('koc-backups') || '[]');
   const b = backups[idx];
   if (!b) return;
   const tarih = new Date(b.ts).toLocaleString('tr-TR');
@@ -3611,7 +3663,7 @@ function restoreBackup(idx) {
 }
 
 function downloadBackup(idx) {
-  const backups = JSON.parse(localStorage.getItem('koc-backups') || '[]');
+  const backups = JSON.parse(LS.getItem('koc-backups') || '[]');
   const b = backups[idx];
   if (!b) return;
   const d = new Date(b.ts);
@@ -3663,7 +3715,7 @@ function doExportJson() {
   a.href = url; a.download = 'koc-tam-yedek-' + stamp + '.json';
   a.click();
   setTimeout(()=>URL.revokeObjectURL(url), 1000);
-  localStorage.setItem('koc-son-yedek', String(Date.now()));
+  LS.setItem('koc-son-yedek', String(Date.now()));
   flash('✓ Tam yedek indirildi: ' + products.length + ' ürün, ' + (sales || []).length + ' satış', true);
 }
 

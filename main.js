@@ -1,132 +1,148 @@
-const { app, BrowserWindow, dialog } = require('electron');
-const path = require('path');
-const { autoUpdater } = require('electron-updater');
+const { app, BrowserWindow, dialog, ipcMain } = require('electron')
+const { autoUpdater } = require('electron-updater')
+const fs = require('fs')
+const path = require('path')
 
-// Production'da geliştirici araçları kapalı
-const isDev = !app.isPackaged;
+const isDev = !app.isPackaged
 
-let mainWindow = null;
+let mainWindow
+
+// ───────────────────────────────────────────────────────────────
+// DİSK DEPOLAMA — tüm veri tek bir JSON dosyasında: koc-data.json
+// Yapı: { "koc-prods": "...", "koc-sales": "...", ... } (anahtar→string)
+// Açılışta belleğe okunur; her yazımda bellek güncellenir + atomik diske yazılır.
+// ───────────────────────────────────────────────────────────────
+let dataFilePath = null
+let memStore = {}
+
+function loadStoreFromDisk() {
+  try {
+    const raw = fs.readFileSync(dataFilePath, 'utf8')
+    const obj = JSON.parse(raw)
+    memStore = (obj && typeof obj === 'object') ? obj : {}
+  } catch (e) {
+    // Dosya yoksa (ilk açılış) veya bozuksa boş başla.
+    if (e.code !== 'ENOENT') {
+      console.error('[KOCSTORE] Veri dosyası okunamadı/bozuk:', e.message)
+      // Bozuk dosyayı kaybetmeyelim — yan tarafa kopya al.
+      try { fs.copyFileSync(dataFilePath, dataFilePath + '.corrupt-' + Date.now()) } catch (_) {}
+    }
+    memStore = {}
+  }
+}
+
+// Atomik yazım: önce .tmp dosyasına yaz + fsync, sonra rename et.
+// Yarıda kesilirse asıl dosya bozulmaz.
+function persistStoreToDisk() {
+  const tmp = dataFilePath + '.tmp'
+  const json = JSON.stringify(memStore)
+  const fd = fs.openSync(tmp, 'w')
+  try {
+    fs.writeSync(fd, json)
+    fs.fsyncSync(fd)
+  } finally {
+    fs.closeSync(fd)
+  }
+  fs.renameSync(tmp, dataFilePath) // Node: Windows'ta da mevcut dosyanın üzerine atomik yazar
+}
+
+function setupDataStore() {
+  dataFilePath = path.join(app.getPath('userData'), 'koc-data.json')
+  loadStoreFromDisk()
+
+  ipcMain.on('kocstore:read', (e, key) => {
+    e.returnValue = Object.prototype.hasOwnProperty.call(memStore, key) ? memStore[key] : null
+  })
+
+  ipcMain.on('kocstore:write', (e, { key, val }) => {
+    try {
+      memStore[key] = String(val)
+      persistStoreToDisk()
+      e.returnValue = true
+    } catch (err) {
+      console.error('[KOCSTORE] Yazma hatası:', key, err.message)
+      e.returnValue = false
+    }
+  })
+
+  ipcMain.on('kocstore:remove', (e, key) => {
+    try {
+      if (Object.prototype.hasOwnProperty.call(memStore, key)) {
+        delete memStore[key]
+        persistStoreToDisk()
+      }
+      e.returnValue = true
+    } catch (err) {
+      console.error('[KOCSTORE] Silme hatası:', key, err.message)
+      e.returnValue = false
+    }
+  })
+
+  ipcMain.on('kocstore:keys', (e) => {
+    e.returnValue = Object.keys(memStore)
+  })
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     title: 'Koç Market',
-    show: false,
     autoHideMenuBar: true,
     webPreferences: {
-      contextIsolation: true,
       nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
       devTools: isDev
     }
-  });
+  })
 
-  // Menü çubuğunu tamamen kaldır
-  mainWindow.setMenuBarVisibility(false);
+  mainWindow.loadFile('index.html')
+  mainWindow.maximize()
 
-  mainWindow.loadFile('index.html');
-
-  // Pencere hazır olunca maximize + tam ekran başlat ve göster
-  mainWindow.once('ready-to-show', () => {
-    mainWindow.maximize();
-    mainWindow.setFullScreen(true);
-    mainWindow.show();
-  });
-
-  // Production'da DevTools kısayollarını ve sağ tık menüsünü engelle
+  // Production'da DevTools kısayollarını engelle (F12, Ctrl+Shift+I/J/C)
   if (!isDev) {
     mainWindow.webContents.on('before-input-event', (event, input) => {
-      const key = (input.key || '').toLowerCase();
-      // F12 ve Ctrl+Shift+I gibi DevTools kısayollarını engelle
+      const key = (input.key || '').toLowerCase()
       if (key === 'f12') {
-        event.preventDefault();
+        event.preventDefault()
       }
       if (input.control && input.shift && (key === 'i' || key === 'j' || key === 'c')) {
-        event.preventDefault();
+        event.preventDefault()
       }
-    });
+    })
   }
 
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
+  mainWindow.on('closed', () => { mainWindow = null })
 }
 
-// --- Otomatik güncelleme (electron-updater + GitHub Releases) ---
 function setupAutoUpdater() {
-  // Geliştirme ortamında güncelleme kontrolü yapma
-  if (isDev) {
-    return;
-  }
-
-  autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = true;
-
-  // Güncelleme bulundu -> kullanıcıya Türkçe sor
-  autoUpdater.on('update-available', (info) => {
-    dialog
-      .showMessageBox(mainWindow, {
-        type: 'info',
-        title: 'Güncelleme Mevcut',
-        message: 'Yeni güncelleme mevcut. Yüklensin mi?',
-        detail: `Yeni sürüm: ${info.version}`,
-        buttons: ['Evet, yükle', 'Daha sonra'],
-        defaultId: 0,
-        cancelId: 1
-      })
-      .then((result) => {
-        if (result.response === 0) {
-          autoUpdater.downloadUpdate();
-        }
-      });
-  });
-
-  // İndirme tamamlandı -> kur ve yeniden başlat
+  if (!app.isPackaged) return
+  autoUpdater.checkForUpdates().catch(() => {})
   autoUpdater.on('update-downloaded', () => {
-    dialog
-      .showMessageBox(mainWindow, {
-        type: 'info',
-        title: 'Güncelleme Hazır',
-        message: 'Güncelleme indirildi. Uygulama şimdi yeniden başlatılıp kurulum tamamlanacak.',
-        buttons: ['Şimdi yeniden başlat', 'Çıkışta kur'],
-        defaultId: 0,
-        cancelId: 1
-      })
-      .then((result) => {
-        if (result.response === 0) {
-          autoUpdater.quitAndInstall();
-        }
-      });
-  });
-
-  autoUpdater.on('error', (err) => {
-    // Güncelleme hatası uygulamayı durdurmamalı; sessizce logla
-    console.error('Güncelleme hatası:', err == null ? 'bilinmiyor' : (err.message || err));
-  });
-
-  // Açılışta güncelleme kontrol et.
-  // checkForUpdates() bir promise döndürür; repo/sürüm yoksa (404) veya
-  // internet yoksa reddedilir. 'error' event'i zaten loglandığı için burada
-  // sessizce yakalıyoruz; aksi halde "unhandled rejection" oluşup uygulamayı
-  // çökertebilir.
-  autoUpdater.checkForUpdates().catch(() => {
-    // Hata ayrıca autoUpdater.on('error') içinde loglanıyor.
-  });
+    dialog.showMessageBox({
+      type: 'info',
+      title: 'Güncelleme Hazır',
+      message: 'Yeni güncelleme mevcut. Yüklensin mi?',
+      buttons: ['Evet', 'Hayır']
+    }).then(result => {
+      if (result.response === 0) autoUpdater.quitAndInstall()
+    })
+  })
 }
 
 app.whenReady().then(() => {
-  createWindow();
-  setupAutoUpdater();
+  setupDataStore()   // IPC + dosya deposu pencere açılmadan önce hazır olsun
+  createWindow()
+  setupAutoUpdater()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      createWindow()
     }
-  });
-});
+  })
+})
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
-});
+  if (process.platform !== 'darwin') app.quit()
+})

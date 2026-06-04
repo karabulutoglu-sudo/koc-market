@@ -552,7 +552,7 @@ input::placeholder { color: var(--soft); }
     <div class="modal-label">Ürün Adı</div>
     <input class="modal-input" id="editName">
     <div class="modal-label">Fiyat (₺) <span style="color:var(--soft);font-weight:500">— KDV dahil</span></div>
-    <input class="modal-input" id="editPrice" type="number">
+    <input class="modal-input" id="editPrice" type="text" inputmode="decimal">
     <div class="modal-label">Stok</div>
     <input class="modal-input" id="editStock" type="number">
     <div class="modal-label">Kategori</div>
@@ -620,7 +620,7 @@ input::placeholder { color: var(--soft); }
     <div style="display:flex;gap:10px">
       <div class="misc-field" style="flex:2">
         <label>Fiyat (₺) <span style="color:var(--soft);font-weight:500">— KDV dahil</span></label>
-        <input type="number" step="0.01" id="miscPrice" placeholder="0.00" inputmode="decimal" onkeydown="if(event.key==='Enter')addMiscItem()">
+        <input type="text" inputmode="decimal" id="miscPrice" placeholder="0,00" onkeydown="if(event.key==='Enter')addMiscItem()">
       </div>
       <div class="misc-field" style="flex:1">
         <label>Adet</label>
@@ -1171,6 +1171,77 @@ function save() {
 }
 function fmt(v) { return Number(v||0).toFixed(2) + ' ₺'; }
 
+// Kullanıcının yazdığı fiyat metnini güvenle sayıya çevirir.
+// Türkçe virgül ondalık ayıracını ("12,50") ve binlik ayıraçları/boşlukları
+// destekler. type="number" virgülü sessizce yutuyordu — bu yüzden fiyat
+// alanları type="text" + inputmode="decimal" yapıldı ve parse burada normalize edilir.
+function parsePrice(str) {
+  if (str == null) return NaN;
+  let s = String(str).trim().replace(/\s/g, '');
+  if (s === '') return NaN;
+  if (s.indexOf(',') !== -1) {
+    // Virgül var → ondalık ayıracı virgül kabul et, noktaları binlik say
+    s = s.replace(/\./g, '').replace(',', '.');
+  }
+  // Kalan geçersiz karakterleri at (₺, harf vs), rakam/nokta/eksi kalsın
+  s = s.replace(/[^0-9.\-]/g, '');
+  return parseFloat(s);
+}
+
+// NOT: native confirm/alert/prompt sarmalayıcısı (odak geri-alma sinyali
+// gönderen 'wrapBlockingDialogs') KALDIRILDI — OneDrive dışına taşınınca odak
+// sorunu çözüldü, gerek kalmadı. confirm/alert/prompt artık düz native.
+
+// 🔎 "ÜRÜN ARA" OTOMATİK TEMİZLİK: Barkod OKUTUNCA kutu dolup ürün bulunuyor;
+// 5 sn değişiklik olmazsa kutu kendiliğinden temizlensin ki kullanıcı sonraki
+// barkodu temiz kutuya okutabilsin (elle silmesin). SADECE okutma senaryosu:
+// okuyucu = hızlı ardışık karakter (input'lar <50ms arayla). Elle YAVAŞ yazımda
+// otomatik temizlik ARMlanmaz (kullanıcının yazısı silinmez). Zamanlayıcı her
+// girişte sıfırlanır. Temizlikten sonra liste tüm ürünlere döner (sorun değil)
+// ve odak kutuda kalır. (Barkod/odak/dialog mantığına dokunmaz.)
+(function prodSearchScanAccumulate(){
+  const el = document.getElementById('prodSearch');
+  if (!el) return;
+  const isBarcode = (v) => /^\d{6,}$/.test((v || '').trim());      // okutulan kod (rakamsal)
+  const hasLetters = (v) => /[^\d\s]/.test(v || '');               // rakam-dışı = metin araması
+  let timer = null;
+
+  // Okutmayı "kesinleştir": bulunan ürünü birikmiş listeye ekle (kopya değil →
+  // üste taşı), kutuyu temizle, listeyi göster, odağı kutuda tut.
+  function commitScan(){
+    const v = (el.value || '').trim();
+    if (!isBarcode(v)) return false;
+    let p = products.find(x => x.b === v);
+    if (!p) { const vn = (typeof _normBarcode === 'function') ? _normBarcode(v) : v; p = products.find(x => ((typeof _normBarcode === 'function') ? _normBarcode(x.b) : x.b) === vn); }
+    if (p) {
+      scannedList = scannedList.filter(b => b !== p.b);   // kopya ekleme → üste taşı
+      scannedList.unshift(p.b);
+    }
+    el.value = '';
+    if (timer) { clearTimeout(timer); timer = null; }
+    try { renderProds(); } catch (e) {}                   // birikmiş listeyi göster
+    try { el.focus(); } catch (e) {}                       // sıradaki okutmaya hazır
+    return true;
+  }
+
+  el.addEventListener('input', function(){
+    if (timer) { clearTimeout(timer); timer = null; }
+    // Kullanıcı METİN yazdıysa → birikmiş okutma modundan çık (normal arama).
+    if (hasLetters(el.value)) { scannedList = []; return; }
+    // Barkod yazılıyorsa: Enter gelmezse 5 sn sonra kesinleştir (fallback).
+    if (isBarcode(el.value)) { timer = setTimeout(commitScan, 5000); }
+  });
+  // Okuyucu sonunda Enter gönderir → hemen kesinleştir (her okutma ayrı birikir).
+  el.addEventListener('keydown', function(e){
+    if (e.key === 'Enter') { e.preventDefault(); commitScan(); }
+  }, false);
+})();
+
+// NOT: pencereyi zorla öne getiren 'focusRecovery' bloğu (pointerdown/pointermove/
+// setInterval → document.hasFocus → win:reclaim) KALDIRILDI. Odak çalma sebebi
+// OneDrive'dı; proje OneDrive dışına alınınca çözüldü. Artık pencere normal davranır;
+// kullanıcı başka uygulamaya geçebilir, Koç Market arkada kalabilir.
+
 // ── TOAST ──
 let toastTimer;
 function flash(msg, ok) {
@@ -1189,6 +1260,9 @@ function switchTab(id) {
     const tabs = ['sale','products','history'];
     t.classList.toggle('active', tabs[i] === id || (id === 'receipt' && i === 0));
   });
+  // Sekme değişince arama kutularını temizle (okuyucudan kaçan/yarım kalan
+  // metin bir sonraki ekrana taşınmasın).
+  ['prodSearch','quickSearch'].forEach(sid => { const s = document.getElementById(sid); if (s) s.value = ''; });
   if (id === 'sale') { paying = false; renderCart(); renderQuick(); updateHeldBadge(); focusBarcode(); }
   if (id === 'products') renderProds();
   if (id === 'history') renderHistory();
@@ -1419,8 +1493,111 @@ let qtyMultiplier = 1;
 let priceCheckMode = false;
 let heldSales = safeLoadJSON('koc-held', []);
 let priceCheckProduct = null;
+// 🛡️ Dialog fırtınası koruması: aynı KAYITSIZ barkodun hızlı tekrar okutulması
+// art arda bloklayıcı confirm() açıp uygulamayı kilitliyordu. Son okutmayı izle.
+let _lastUnknownScanCode = '';
+let _lastUnknownScanTime = 0;
 
 function saveHeld(){ safeSaveJSON('koc-held', heldSales); updateHeldBadge(); }
+
+// ── BLOKLAMAYAN UYGULAMA-İÇİ ONAY KUTUSU ──
+// Yerleşik confirm() BLOKLAYICIdır: hızlı barkod okuyucu kayıtsız bir barkodu
+// tekrar tekrar okuduğunda dialoglar üst üste binip uygulamayı kilitliyordu.
+// Bu kutu bloklamaz (callback ile çalışır) ve .modal-overlay.show sınıfını
+// kullandığı için açıkken barkod otomatik-odak mantığı da duraklar.
+function appConfirm(opts){
+  const eski = document.getElementById('appConfirmOverlay');
+  if (eski) eski.remove();   // aynı anda tek kutu
+  const ov = document.createElement('div');
+  ov.id = 'appConfirmOverlay';
+  ov.className = 'modal-overlay show';
+  ov.innerHTML =
+    '<div class="modal-card" style="max-width:460px">' +
+      '<div class="modal-title">' + escHtml(opts.title || 'Onay') + '</div>' +
+      '<div style="font-size:14px;color:#222;line-height:1.55;white-space:pre-wrap;margin-bottom:18px">' + (opts.bodyHtml || '') + '</div>' +
+      '<div style="display:flex;gap:10px;justify-content:flex-end">' +
+        '<button id="appConfirmCancel" style="padding:10px 18px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font-weight:800;font-size:14px;cursor:pointer">' + escHtml(opts.cancelText || 'İptal') + '</button>' +
+        '<button id="appConfirmOk" style="padding:10px 18px;border-radius:8px;border:none;background:linear-gradient(135deg,var(--accent),var(--accent3));color:#fff;font-weight:900;font-size:14px;cursor:pointer">' + escHtml(opts.okText || 'Tamam') + '</button>' +
+      '</div>' +
+    '</div>';
+  function close(){ ov.remove(); document.removeEventListener('keydown', onKey, true); }
+  function doOk(){ close(); try { opts.onOk && opts.onOk(); } finally { focusBarcode(); } }
+  function doCancel(){ close(); try { opts.onCancel && opts.onCancel(); } finally { focusBarcode(); } }
+  function onKey(e){ if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); doCancel(); } }
+  ov.addEventListener('click', function(e){ if (e.target === ov) doCancel(); });
+  document.body.appendChild(ov);
+  ov.querySelector('#appConfirmOk').addEventListener('click', doOk);
+  ov.querySelector('#appConfirmCancel').addEventListener('click', doCancel);
+  document.addEventListener('keydown', onKey, true);
+  // Güvenli varsayılan: İptal'e odak (yanlış/okuyucu Enter'ı kaza ile onaylamasın)
+  setTimeout(() => { const c = ov.querySelector('#appConfirmCancel'); if (c) c.focus(); }, 30);
+}
+
+// "Ürün bulunamadı → yeni ürün olarak ekle?" — bloklamayan akış
+function promptYeniUrun(code, benzer){
+  let cokl = '';
+  if (benzer && benzer.length > 1) {
+    cokl = '\n\n⚠ Birden fazla benzer ürün var — elle kontrol et:\n' +
+      benzer.slice(0, 5).map(b => '   • ' + b.p.n + ' (' + b.p.b + ')').join('\n');
+  }
+  appConfirm({
+    title: 'Ürün bulunamadı',
+    bodyHtml: 'Barkod: <b>' + escHtml(code) + '</b>' + escHtml(cokl) +
+              '\n\nBu barkodu yeni ürün olarak eklemek ister misin?',
+    okText: '✓ Evet, Hızlı Ekle',
+    cancelText: '✕ Hayır',
+    onOk: function(){
+      switchTab('products');
+      // Hızlı Ekle'yi GARANTİ aç (kör toggle değil — zaten açıksa kapatmasın)
+      const area = document.getElementById('addFormArea');
+      if (area && (area.classList.contains('hidden') || area.dataset.mode !== 'quick')) {
+        toggleQuickAdd();
+      }
+      // qaB oluşana kadar kısa süre dene, sonra barkodu yaz ve ada odaklan
+      let _tries = 0;
+      const _fillBarkod = () => {
+        const qaB = document.getElementById('qaB');
+        if (qaB) {
+          qaB.value = code;
+          const qaN = document.getElementById('qaN');
+          if (qaN) qaN.focus();
+        } else if (_tries++ < 20) {
+          setTimeout(_fillBarkod, 30);
+        }
+      };
+      setTimeout(_fillBarkod, 30);
+    }
+  });
+}
+
+// "Olası barkod hatası — tek yakın eşleşme" — bloklamayan akış
+function promptBarkodDuzelt(m, code, codeNorm, benzer){
+  appConfirm({
+    title: '🔧 Olası barkod hatası',
+    bodyHtml: 'Bu ürün <b>' + escHtml(m.p.n) + '</b> mi?\n\n' +
+              '• Okutulan: ' + escHtml(code) + '  (' + code.length + ' hane)\n' +
+              '• Kayıttaki: ' + escHtml(String(m.p.b)) + '  (' + String(m.p.b).length + ' hane)\n' +
+              '• Fiyat: ' + escHtml(fmt(m.p.p)) + '\n\n' +
+              'Aynı ürün gibi görünüyor. Barkodu düzeltip sepete ekleyeyim mi?\n(önce otomatik yedek alınır)',
+    okText: '✓ Düzelt ve ekle',
+    cancelText: '✕ Bu değil',
+    onOk: function(){
+      const eskiBarkod = String(m.p.b);
+      try { makeBackup('Barkod otomatik düzeltme: ' + m.p.n + ' (' + eskiBarkod + ' → ' + codeNorm + ')'); } catch(e){}
+      m.p.b = codeNorm;
+      _originalSave && _originalSave();
+      console.warn('[BARKOD] "' + m.p.n + '" barkodu düzeltildi: "' + eskiBarkod + '" → "' + codeNorm + '"');
+      addToCart(codeNorm, qtyMultiplier);
+      qtyMultiplier = 1;
+      showMultIndicator();
+      flash('🔧 Barkod düzeltildi: ' + m.p.n + ' eklendi', true);
+    },
+    onCancel: function(){
+      // Reddetti → yeni ürün ekleme akışına geç
+      promptYeniUrun(code, benzer);
+    }
+  });
+}
 
 function handleBarcodeKey(e){
   if (e.key === 'Enter') { doScan(); return; }
@@ -1467,6 +1644,20 @@ function doScan() {
     // 🔬 TEŞHİS: console'a ne arandığını ve DB'de ne olduğunu yaz
     console.warn('[BARKOD] Bulunamadı: "' + code + '" (uzunluk ' + code.length + ', normalleştirilmiş: "' + codeNorm + '")');
 
+    // 🛡️ DIALOG FIRTINASI KORUMASI: aynı kayıtsız barkod 4 sn içinde tekrar
+    // okutulursa YENİ bloklayıcı confirm() açma (okuyucu hızlı tekrar okuyunca
+    // dialoglar üst üste binip uygulamayı kilitliyordu). Sadece kısa uyarı ver.
+    const _nowT = Date.now();
+    const _dupeUnknown = (code === _lastUnknownScanCode && (_nowT - _lastUnknownScanTime) < 4000);
+    _lastUnknownScanCode = code;
+    _lastUnknownScanTime = _nowT;
+    if (_dupeUnknown) {
+      inp.value = '';
+      inp.focus();
+      flash('⚠ "' + code + '" kayıtlı değil', false);
+      return;
+    }
+
     // Yakın eşleşme ara — kayıttaki barkod, okutulan barkodu içeriyor mu?
     // (veya tersi). Veri girişi hatası genelde 1-2 fazla/eksik karakter olur.
     // Örnek vaka: Pepsi okutuldu = "8690574114795" (13 hane),
@@ -1490,57 +1681,15 @@ function doScan() {
       console.warn('[BARKOD] Yakın eşleşme(ler):', benzer.map(b => b.p.n + ' / "' + b.p.b + '"'));
     }
 
-    // 🔧 TEK TIK DÜZELTME: tek bir yakın eşleşme varsa, kullanıcıya düzeltme teklif et
-    if (benzer.length === 1) {
-      const m = benzer[0];
-      const ekle = confirm(
-        '🔧 OLASI BARKOD HATASI BULUNDU\n\n' +
-        'Bu ürün "' + m.p.n + '" mi?\n\n' +
-        '• Okutulan barkod: ' + code + '  (' + code.length + ' hane)\n' +
-        '• Kayıttaki barkod: ' + m.p.b + '  (' + String(m.p.b).length + ' hane)\n' +
-        '• Fiyat: ' + fmt(m.p.p) + '\n\n' +
-        'Aynı ürün gibi görünüyor — kayıttaki barkodda fazladan/eksik karakter var.\n\n' +
-        '✓ TAMAM = Barkodu düzelt + sepete ekle (önce yedek alınır)\n' +
-        '✕ İPTAL = Bu eşleşmeyi reddet'
-      );
-      if (ekle) {
-        const eskiBarkod = String(m.p.b);
-        try { makeBackup('Barkod otomatik düzeltme: ' + m.p.n + ' (' + eskiBarkod + ' → ' + codeNorm + ')'); } catch(e){}
-        m.p.b = codeNorm;
-        _originalSave && _originalSave();
-        console.warn('[BARKOD] "' + m.p.n + '" barkodu düzeltildi: "' + eskiBarkod + '" → "' + codeNorm + '"');
-        addToCart(codeNorm, qtyMultiplier);
-        qtyMultiplier = 1;
-        showMultIndicator();
-        inp.value = '';
-        inp.focus();
-        flash('🔧 Barkod düzeltildi: ' + m.p.n + ' eklendi', true);
-        return;
-      }
-      // İptal'e bastıysa → aşağıdaki "yeni ürün" akışına devam etsin
-    }
-
-    // Birden fazla yakın eşleşme varsa, listeyi göstererek bilgilendir (otomatik düzeltme yapma)
-    let coklUyari = '';
-    if (benzer.length > 1) {
-      coklUyari = '\n\n⚠ Birden fazla benzer ürün bulundu — emin olamadığım için elle kontrol et:\n' +
-        benzer.slice(0, 5).map(b => '   • ' + b.p.n + ' (' + b.p.b + ')').join('\n') +
-        '\nÜRÜNLER sekmesinden barkodu düzelt.';
-    }
-
-    // Mevcut "yeni ürün ekle" akışı
+    // Bloklamayan onay kutuları (confirm() yerine):
     inp.value = '';
     inp.focus();
-    if (confirm('Ürün bulunamadı: ' + code + coklUyari + '\n\nBu barkodu yeni ürün olarak eklemek ister misin?\n\n✓ Evet → ÜRÜNLER > Hızlı Ekleme moduna geç (barkod hazır gelecek)\n✕ Hayır → İptal')) {
-      switchTab('products');
-      // Hızlı Ekleme modunu aç
-      setTimeout(() => {
-        toggleQuickAdd();
-        setTimeout(() => {
-          const qaB = document.getElementById('qaB');
-          if (qaB) { qaB.value = code; document.getElementById('qaN')?.focus(); }
-        }, 100);
-      }, 100);
+    if (benzer.length === 1) {
+      // Tek yakın eşleşme → barkod düzeltme teklifi (reddederse yeni ürün akışı)
+      promptBarkodDuzelt(benzer[0], code, codeNorm, benzer);
+    } else {
+      // Hiç/çok eşleşme → doğrudan "yeni ürün ekle?" teklifi
+      promptYeniUrun(code, benzer);
     }
     return;
   }
@@ -1635,7 +1784,7 @@ function renderCart() {
         <div class="pay-title">💳 ÖDEME</div>
         <div class="pay-total-label">Toplam (${cartCount()} ürün)</div>
         <div class="pay-total-val">${fmt(cartTotal())}</div>
-        <input class="pay-input" id="payInput" placeholder="Alınan tutar (opsiyonel)" type="number" inputmode="decimal" onkeydown="if(event.key==='Enter')finishSale();if(event.key==='Escape'){paying=false;renderCart();}">
+        <input class="pay-input" id="payInput" placeholder="Alınan tutar (opsiyonel)" type="text" inputmode="decimal" onkeydown="if(event.key==='Enter')finishSale();if(event.key==='Escape'){paying=false;renderCart();}">
         <div class="pay-hint">Para üstü gerekmiyorsa boş bırak, TAMAMLA'ya bas</div>
         <div id="changeBox" class="hidden"></div>
         <button class="btn-finish" onclick="finishSale()">✓ TAMAMLA</button>
@@ -1673,7 +1822,7 @@ function showChange() {
   const pi = document.getElementById('payInput');
   const box = document.getElementById('changeBox');
   if (!pi || !box) return;
-  const paid = parseFloat(pi.value);
+  const paid = parsePrice(pi.value);
   if (!isNaN(paid) && paid >= cartTotal()) {
     box.className = 'change-box';
     box.innerHTML = `Para Üstü: <span class="change-val">${fmt(paid - cartTotal())}</span>`;
@@ -1692,7 +1841,7 @@ function finishSale() {
     // Boş ise: müşteri tam tutarı verdi varsay
     paid = tot;
   } else {
-    paid = parseFloat(raw);
+    paid = parsePrice(raw);
     if (isNaN(paid)) return flash('Geçersiz tutar!', false);
     if (paid < tot) return flash('Yetersiz ödeme! (' + fmt(tot-paid) + ' eksik)', false);
   }
@@ -2119,7 +2268,7 @@ function closeMisc() {
 
 function addMiscItem() {
   const name = document.getElementById('miscName').value.trim();
-  const price = parseFloat(document.getElementById('miscPrice').value);
+  const price = parsePrice(document.getElementById('miscPrice').value);
   const qty = parseInt(document.getElementById('miscQty').value) || 1;
   // ⚠️ KRİTİK: parseInt('0')||20 her zaman 20 döner (0 falsy). isNaN ile kontrol şart.
   const _miscKdvVal = parseInt(document.getElementById('miscKdv').value, 10);
@@ -2182,66 +2331,90 @@ function addMiscItem() {
   flash((qty>1?qty+' × ':'') + name + ' (' + fmt(price) + ', KDV %' + kdv + ') eklendi', true);
 }
 
-// ── OTOMATİK ODAK (Barkod kutusu her zaman hazır olsun) ──
+// ── OTOMATİK ODAK (Barkod kutusu satışa hazır olsun) ──
+// KURAL 1: Gerçekten yazılan bir alan (input/textarea/select/contentEditable)
+//          odaktaysa ASLA odağı çalma, tuşları ASLA araya alma.
+// KURAL 2: Barkoda otomatik odak SADECE şu üçü birden doğruysa verilir:
+//          (a) SATIŞ sekmesi açık  (b) hiçbir overlay/form açık değil (ödeme dahil)
+//          (c) barkod kutusu ekranda görünür.
+// KURAL 3: Barkod kutusu görünmüyorsa (ÜRÜNLER/GEÇMİŞ ekranı) asla odak almaz.
+
+// Barkoda odak vermeye uygun muyuz? Uygunsak input'u, değilse null döndürür.
+function _barcodeFocusTarget() {
+  const inp = document.getElementById('barcodeInput');
+  if (!inp) return null;
+  // KURAL 3: kutu görünür değilse (sekme gizliyse offsetParent null olur) odak alma
+  if (inp.offsetParent === null) return null;
+  const saleActive = document.getElementById('sec-sale').classList.contains('active');
+  if (!saleActive || paying) return null;
+  const overlayOpen = document.querySelector('.modal-overlay.show, .price-overlay.show, .import-modal.show, #editModal:not(.hidden)');
+  if (overlayOpen) return null;
+  return inp;
+}
+
+// KURAL 1: şu an gerçekten yazılan bir alan odakta mı? (verilen kutu hariç)
+function _isEditableFocused(except) {
+  const a = document.activeElement;
+  if (!a || a === document.body || a === except) return false;
+  const tag = a.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || a.isContentEditable === true;
+}
+
 function focusBarcode() {
   setTimeout(() => {
-    const inp = document.getElementById('barcodeInput');
+    const inp = _barcodeFocusTarget();      // KURAL 2 + 3
     if (!inp) return;
-    const saleActive = document.getElementById('sec-sale').classList.contains('active');
-    const overlayOpen = document.querySelector('.modal-overlay.show, .price-overlay.show, .import-modal.show, #editModal:not(.hidden)');
-    if (!saleActive || overlayOpen || paying) return;
-    // Başka bir input zaten odakta değilse barkoda odaklan
-    const active = document.activeElement;
-    if (!active || active === document.body || active.tagName !== 'INPUT') inp.focus();
+    if (_isEditableFocused(inp)) return;     // KURAL 1 — başka alana yazılıyor, dokunma
+    if (document.activeElement !== inp) inp.focus();
   }, 20);
 }
 // NOT: Sürekli yoklama (setInterval) KALDIRILDI — odak artık sadece gerçek
 // olaylarda barkoda verilir (satış sekmesi açılınca, modal kapanınca, satış
 // tamamlanınca, sepete ürün eklenince, pencere odak kazanınca).
-// Bu çağrılar zaten kodun ilgili yerlerinde focusBarcode() ile yapılıyor.
 
-// Sayfa odağını geri kazanınca barkoda dön
+// Pencere odağı geri kazanınca (alt-tab) barkoda dön — yalnızca uygunsa.
 window.addEventListener('focus', focusBarcode);
+// Sekme/pencere yeniden görünür olunca da barkoda dön (odak kilitlenmesi kurtarma).
+document.addEventListener('visibilitychange', () => { if (!document.hidden) focusBarcode(); });
+// 🛡️ KURTARMA: SATIŞ ekranında boş bir alana TIKLANINCA barkoda odak ver.
+// (Odak bir şekilde kaybolduysa kullanıcı herhangi bir yere tıklayarak düzeltebilsin;
+//  buton/input/select gibi gerçek hedeflere tıklamaya karışmaz.)
+document.addEventListener('pointerdown', (e) => {
+  const t = e.target;
+  if (!t) return;
+  if (t.closest('button, input, select, textarea, a, label, .modal-overlay, .price-overlay, #editModal')) return;
+  focusBarcode();
+});
 
-// Barkod kutusu odağı kaybedince: kısa gecikmeyle "boşa mı gitti" diye bak.
-// Kullanıcı bilerek başka bir kutuya/butona tıkladıysa DOKUNMA; ama odak
-// hiçbir yere (document.body) gittiyse barkoda geri dön.
+// Barkod kutusu odağı kaybedince: odak boşluğa (body/null) düştüyse geri al.
+// Kullanıcı bilerek başka bir alana/butona geçtiyse KARIŞMA (KURAL 1).
 (function attachBarcodeBlurGuard(){
   const inp = document.getElementById('barcodeInput');
   if (!inp) return;
   inp.addEventListener('blur', function(){
     setTimeout(() => {
-      const saleActive = document.getElementById('sec-sale').classList.contains('active');
-      const overlayOpen = document.querySelector('.modal-overlay.show, .price-overlay.show, .import-modal.show, #editModal:not(.hidden)');
-      if (!saleActive || overlayOpen || paying) return;
-      const active = document.activeElement;
-      // Kullanıcı bilerek başka bir input/textarea/select/button'a geçtiyse karışma
-      if (active && active !== document.body && active !== inp) {
-        const tag = active.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
-            tag === 'BUTTON' || tag === 'A' || active.isContentEditable) return;
+      if (_barcodeFocusTarget() !== inp) return;   // KURAL 2 + 3
+      if (_isEditableFocused(inp)) return;          // başka yazı alanına geçildi
+      const a = document.activeElement;
+      if (a && a !== document.body && a !== inp) {  // butona/linke bilerek geçildi
+        const tag = a.tagName;
+        if (tag === 'BUTTON' || tag === 'A') return;
       }
-      // Odak boşa gitti (document.body / null) → barkoda geri dön
-      inp.focus();
+      inp.focus();   // odak boşa düştü → barkoda geri dön
     }, 150);
   });
 })();
-// YENİ: Global tuş basımı — odak doğru yerde değilse barkod kutusuna yönlendir
+
+// Barkod okuyucu / elle yazım: odak BOŞTAYKEN (body/null) ya da yazı alanı
+// olmayan bir elemandayken tuşa basılırsa barkoda yönlendir.
+// Gerçek bir yazı alanı odaktaysa ASLA dokunma (KURAL 1).
 document.addEventListener('keydown', function(e){
-  // Modifier tuşları, fonksiyon tuşları atla
   if (e.ctrlKey || e.altKey || e.metaKey) return;
   if (e.key.length > 1 && e.key !== 'Enter' && e.key !== 'Backspace') return;
-  const saleActive = document.getElementById('sec-sale').classList.contains('active');
-  const overlayOpen = document.querySelector('.modal-overlay.show, .price-overlay.show, .import-modal.show, #editModal:not(.hidden)');
-  if (!saleActive || overlayOpen || paying) return;
-  const active = document.activeElement;
-  const inp = document.getElementById('barcodeInput');
+  const inp = _barcodeFocusTarget();        // KURAL 2 + 3
   if (!inp) return;
-  // Zaten barkod kutusu aktifse bırak
-  if (active === inp) return;
-  // Başka bir input aktifse dokunma (ürün düzenleme, muhtelif form vs)
-  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT')) return;
-  // Karakter tuşuysa (a-z, 0-9 vs) odağı barkod kutusuna ver ve karakteri oraya ekle
+  if (document.activeElement === inp) return;  // zaten barkod kutusunda
+  if (_isEditableFocused(inp)) return;         // KURAL 1 — başka yazı alanına yazılıyor
   inp.focus();
   if (e.key.length === 1 && /[\w\d*xX×]/.test(e.key)) {
     inp.value += e.key;
@@ -2249,9 +2422,48 @@ document.addEventListener('keydown', function(e){
   }
 });
 
+// NOT: "Ürün ara" kutusuna barkod okutarak ürün aramak İSTENİYOR. Bu yüzden
+// arama kutularına okuyucu girişini engelleyen koruma KALDIRILDI — okutulan
+// barkod kutuya yazılır ve liste o ürüne göre filtrelenir.
+
 // ── PRODUCTS ──
 // Ürünler sekmesindeki aktif kategori filtresi
 let prodCatFilter = 'Tümü';
+
+// 🔎 "Okutulanlar" birikmiş liste: arama kutusuna okutulan barkodların ürünleri
+// burada birikir (en son okutulan başta). Arama kutusu boşken bu liste gösterilir.
+let scannedList = [];
+
+// Ürünler ekranında gösterilecek listeyi belirler:
+//  - Kutu METİN/ barkod içeriyorsa → normal arama filtresi
+//  - Kutu boş + okutulanlar varsa → sadece okutulanlar (birikmiş, en yeni üstte)
+//  - Kutu boş + okutulan yoksa → tüm ürünler
+function computeVisibleList() {
+  const q = (document.getElementById('prodSearch')?.value || '').trim().toLowerCase();
+  if (!q && scannedList.length > 0) {
+    const list = [];
+    for (const b of scannedList) {
+      const p = products.find(x => x.b === b);
+      if (p && (prodCatFilter === 'Tümü' || p.c === prodCatFilter)) list.push(p);
+    }
+    return { list, mode: 'scanned' };
+  }
+  const list = products.filter(p => {
+    if (prodCatFilter !== 'Tümü' && p.c !== prodCatFilter) return false;
+    if (!q) return true;
+    return p.n.toLowerCase().includes(q) || p.b.includes(q);
+  });
+  return { list, mode: q ? 'search' : 'all' };
+}
+
+// Birikmiş okutma listesini temizle → normal tüm-ürünler görünümüne dön.
+function clearScannedView() {
+  scannedList = [];
+  const el = document.getElementById('prodSearch');
+  if (el) el.value = '';
+  renderProds();
+  if (el) { try { el.focus(); } catch (e) {} }
+}
 
 function renderProdCatBar() {
   const bar = document.getElementById('prodCatBar');
@@ -2325,15 +2537,18 @@ let lastClickedIdx = -1; // Shift+click için
 function renderProds() {
   renderProdCatBar();
   const q = (document.getElementById('prodSearch')?.value || '').toLowerCase();
-  const list = products.filter(p => {
-    if (prodCatFilter !== 'Tümü' && p.c !== prodCatFilter) return false;
-    if (!q) return true;
-    return p.n.toLowerCase().includes(q) || p.b.includes(q);
-  });
-  const totalText = prodCatFilter === 'Tümü'
-    ? list.length + ' ürün (toplam)'
-    : list.length + ' ürün • ' + prodCatFilter + ' kategorisi' + (q ? ' • arama aktif' : '');
-  document.getElementById('prodCount').textContent = totalText;
+  const vis = computeVisibleList();
+  const list = vis.list;
+  const countEl = document.getElementById('prodCount');
+  if (vis.mode === 'scanned') {
+    countEl.innerHTML = '📦 ' + list.length + ' okutulan ürün' +
+      ' <button onclick="clearScannedView()" style="margin-left:8px;padding:3px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--text);font-weight:700;font-size:11px;cursor:pointer" title="Birikmiş okutma listesini temizle ve tüm ürünleri göster">🧹 Tümünü Göster</button>';
+  } else {
+    const totalText = prodCatFilter === 'Tümü'
+      ? list.length + ' ürün (toplam)'
+      : list.length + ' ürün • ' + prodCatFilter + ' kategorisi' + (q ? ' • arama aktif' : '');
+    countEl.textContent = totalText;
+  }
   document.getElementById('prodList').innerHTML = list.map((p, listIdx) => {
     const idx = products.indexOf(p);
     const nameSafe = escHtml(p.n);
@@ -2360,12 +2575,7 @@ function renderProds() {
 
 // ── TOPLU SEÇİM YÖNETİMİ ──
 function visibleProductsList() {
-  const q = (document.getElementById('prodSearch')?.value || '').toLowerCase();
-  return products.filter(p => {
-    if (prodCatFilter !== 'Tümü' && p.c !== prodCatFilter) return false;
-    if (!q) return true;
-    return p.n.toLowerCase().includes(q) || p.b.includes(q);
-  });
+  return computeVisibleList().list;
 }
 
 function toggleRowSelect(ev, barcode, listIdx) {
@@ -2524,7 +2734,7 @@ function saveEdit() {
   const p = products[idx];
   if (!p) return;
   p.n = document.getElementById('editName').value;
-  p.p = parseFloat(document.getElementById('editPrice').value) || p.p;
+  p.p = parsePrice(document.getElementById('editPrice').value) || p.p;
   p.s = parseInt(document.getElementById('editStock').value) || 0;
   p.c = document.getElementById('editCat').value.trim() || p.c || 'Muhtelif Ürünler';
   // ⚠️ KRİTİK: parseInt('0')||20 her zaman 20 döner (0 falsy). isNaN ile kontrol şart.
@@ -4244,7 +4454,7 @@ function toggleQuickAdd() {
         <div style="display:grid;grid-template-columns:1.5fr 2fr 1fr 1fr 1fr;gap:6px;margin-bottom:8px">
           <input id="qaB" placeholder="Barkod" class="modal-input" onkeydown="qaNext(event,'qaN')">
           <input id="qaN" placeholder="Ürün adı" class="modal-input" onkeydown="qaNext(event,'qaP')">
-          <input id="qaP" placeholder="Fiyat (KDV dahil)" type="number" step="0.01" class="modal-input" onkeydown="qaNext(event,'qaS')">
+          <input id="qaP" placeholder="Fiyat (KDV dahil)" type="text" inputmode="decimal" class="modal-input" onkeydown="qaNext(event,'qaS')">
           <input id="qaS" placeholder="Stok" type="number" class="modal-input" onkeydown="qaNext(event,'qaK')" value="0">
           <select id="qaK" class="modal-input" onkeydown="qaNext(event,'qaC')">
             ${KDV_RATES.map(r=>`<option value="${r.value}">KDV %${r.value}</option>`).join('')}
@@ -4290,7 +4500,7 @@ function qaSubmit() {
   const b = document.getElementById('qaB').value.trim();
   const n = document.getElementById('qaN').value.trim();
   const pRaw = document.getElementById('qaP').value.trim();
-  const p = parseFloat(pRaw);
+  const p = parsePrice(pRaw);
   const s = parseInt(document.getElementById('qaS').value) || 0;
   // ⚠️ KRİTİK: parseInt('0')||20 her zaman 20 döner (0 falsy). isNaN ile kontrol şart.
   const _qaKdvVal = parseInt(document.getElementById('qaK').value, 10);

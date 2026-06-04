@@ -15,6 +15,10 @@ contextBridge.exposeInMainWorld('kocStore', {
   keys:   ()         => ipcRenderer.sendSync('kocstore:keys')
 });
 
+// NOT: 'kocWin' köprüsü (refocus/reclaim/dialogOpen) KALDIRILDI — odak çalma
+// sebebi OneDrive'dı, proje OneDrive dışına alınınca çözüldü; zorla-öne-getirme
+// yamalarına gerek kalmadı.
+
 // Gerçek "Farklı Kaydet" / "Aç" pencereleri (Electron dialog). Asenkron.
 contextBridge.exposeInMainWorld('kocFile', {
   // "Farklı kaydet" penceresi aç, seçilen yola yaz → {ok,path} | {canceled} | {ok:false,error}

@@ -143,18 +143,10 @@ function createWindow() {
   mainWindow.loadFile('index.html')
   mainWindow.maximize()
 
-  // Production'da DevTools kısayollarını engelle (F12, Ctrl+Shift+I/J/C)
-  if (!isDev) {
-    mainWindow.webContents.on('before-input-event', (event, input) => {
-      const key = (input.key || '').toLowerCase()
-      if (key === 'f12') {
-        event.preventDefault()
-      }
-      if (input.control && input.shift && (key === 'i' || key === 'j' || key === 'c')) {
-        event.preventDefault()
-      }
-    })
-  }
+  // NOT: Bu noktada eskiden "odak kurtarma / zorla öne getirme" kodları vardı
+  // (webContents.focus handlers, setInterval bekçi, küçült/aç reclaim). Asıl
+  // odak çalma sebebi OneDrive senkronuydu; proje OneDrive dışına alınınca çözüldü.
+  // O yamalar tamamen kaldırıldı — pencere artık düz, normal bir Electron penceresi.
 
   mainWindow.on('closed', () => { mainWindow = null })
 }

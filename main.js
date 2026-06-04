@@ -161,8 +161,15 @@ function createWindow() {
 
 function setupAutoUpdater() {
   if (!app.isPackaged) return
-  autoUpdater.checkForUpdates().catch(() => {})
+
+  let updatePromptShown = false
+
+  // ÖNEMLİ: Dinleyiciyi checkForUpdates()'ten ÖNCE kaydet. Güncelleme önceki
+  // oturumda zaten indirilmişse 'update-downloaded' kontrol sırasında hemen
+  // tetiklenebilir; dinleyici sonra kaydedilirse bu olay kaçar ve pencere çıkmazdı.
   autoUpdater.on('update-downloaded', () => {
+    if (updatePromptShown) return  // aynı oturumda tek sefer sor (çift pencere olmasın)
+    updatePromptShown = true
     dialog.showMessageBox({
       type: 'info',
       title: 'Güncelleme Hazır',
@@ -170,8 +177,15 @@ function setupAutoUpdater() {
       buttons: ['Evet', 'Hayır']
     }).then(result => {
       if (result.response === 0) autoUpdater.quitAndInstall()
+      else updatePromptShown = false  // "Hayır" derse ileride tekrar sorulabilsin
     })
   })
+
+  autoUpdater.on('error', (err) => {
+    console.error('[AUTO-UPDATE] hata:', err == null ? 'bilinmeyen' : (err.message || err))
+  })
+
+  autoUpdater.checkForUpdates().catch(() => {})
 }
 
 app.whenReady().then(() => {

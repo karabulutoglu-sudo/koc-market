@@ -81,6 +81,49 @@ function setupDataStore() {
   ipcMain.on('kocstore:keys', (e) => {
     e.returnValue = Object.keys(memStore)
   })
+
+  // ── Dosya pencereleri: gerçek "Farklı Kaydet" / "Aç" (Electron dialog) ──
+  ipcMain.handle('kocfile:save', async (e, { defaultName, contents }) => {
+    try {
+      const win = BrowserWindow.fromWebContents(e.sender)
+      const startPath = path.join(app.getPath('desktop'), defaultName || 'koc-yedek.json')
+      const r = await dialog.showSaveDialog(win, {
+        title: 'Yedeği Kaydet',
+        defaultPath: startPath,
+        filters: [
+          { name: 'Yedek Dosyaları', extensions: ['json', 'csv'] },
+          { name: 'Tüm Dosyalar', extensions: ['*'] }
+        ]
+      })
+      if (r.canceled || !r.filePath) return { canceled: true }
+      fs.writeFileSync(r.filePath, contents, 'utf8')
+      return { ok: true, path: r.filePath }
+    } catch (err) {
+      console.error('[KOCFILE] Kaydetme hatası:', err.message)
+      return { ok: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('kocfile:open', async (e) => {
+    try {
+      const win = BrowserWindow.fromWebContents(e.sender)
+      const r = await dialog.showOpenDialog(win, {
+        title: 'Yedek Dosyası Seç',
+        properties: ['openFile'],
+        filters: [
+          { name: 'Yedek Dosyaları', extensions: ['json', 'csv'] },
+          { name: 'Tüm Dosyalar', extensions: ['*'] }
+        ]
+      })
+      if (r.canceled || !r.filePaths || !r.filePaths.length) return { canceled: true }
+      const fp = r.filePaths[0]
+      const contents = fs.readFileSync(fp, 'utf8')
+      return { ok: true, contents, path: fp }
+    } catch (err) {
+      console.error('[KOCFILE] Açma hatası:', err.message)
+      return { ok: false, error: err.message }
+    }
+  })
 }
 
 function createWindow() {

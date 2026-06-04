@@ -14,3 +14,12 @@ contextBridge.exposeInMainWorld('kocStore', {
   // Tüm anahtarları döndür → string[]
   keys:   ()         => ipcRenderer.sendSync('kocstore:keys')
 });
+
+// Gerçek "Farklı Kaydet" / "Aç" pencereleri (Electron dialog). Asenkron.
+contextBridge.exposeInMainWorld('kocFile', {
+  // "Farklı kaydet" penceresi aç, seçilen yola yaz → {ok,path} | {canceled} | {ok:false,error}
+  save: (defaultName, contents) =>
+    ipcRenderer.invoke('kocfile:save', { defaultName: String(defaultName), contents: String(contents) }),
+  // Dosya seçtir, içeriğini oku → {ok,contents,path} | {canceled} | {ok:false,error}
+  open: () => ipcRenderer.invoke('kocfile:open')
+});

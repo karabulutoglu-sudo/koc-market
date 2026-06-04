@@ -3079,7 +3079,7 @@ function _yedekHatirlatmaModaliGoster(gunFark, sonYedek) {
 }
 
 // "ŞİMDİ BİLGİSAYARA YEDEK AL" butonuna basıldığında — JSON otomatik indir
-function _hemenYedekAl() {
+async function _hemenYedekAl() {
   try {
     const d = new Date();
     const stamp = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') + '_' + String(d.getHours()).padStart(2,'0') + String(d.getMinutes()).padStart(2,'0');
@@ -3095,16 +3095,14 @@ function _hemenYedekAl() {
       saleCount: (sales || []).length,
       heldCount: (heldSales || []).length
     };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'koc-tam-yedek-' + stamp + '.json';
-    a.click();
-    setTimeout(()=>URL.revokeObjectURL(url), 1000);
+    const name = 'koc-tam-yedek-' + stamp + '.json';
+    const res = await saveFileSmart(name, JSON.stringify(payload, null, 2));
+    if (res && res.canceled) return;
+    if (!res || !res.ok) { alert('❌ Yedek kaydedilemedi: ' + (res && res.error || 'bilinmeyen hata')); return; }
     LS.setItem('koc-son-yedek', String(Date.now()));
     document.getElementById('yedekHatirlatmaOverlay')?.remove();
-    flash('✓ Tam yedek indirildi (' + products.length + ' ürün, ' + (sales || []).length + ' satış)', true);
+    const nerede = (res.path && !res.browser) ? ('\n📁 ' + res.path) : '';
+    flash('✓ Yedek kaydedildi (' + products.length + ' ürün, ' + (sales || []).length + ' satış)' + nerede, true);
   } catch(e) {
     alert('Yedek alınamadı: ' + e.message);
   }
@@ -3662,19 +3660,17 @@ function restoreBackup(idx) {
   flash('✓ Geri yüklendi: ' + yedekDetay + ' (' + tarih + ')', true);
 }
 
-function downloadBackup(idx) {
+async function downloadBackup(idx) {
   const backups = JSON.parse(LS.getItem('koc-backups') || '[]');
   const b = backups[idx];
   if (!b) return;
   const d = new Date(b.ts);
   const stamp = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') + '_' + String(d.getHours()).padStart(2,'0') + String(d.getMinutes()).padStart(2,'0');
   const content = JSON.stringify({ts:b.ts, reason:b.reason, count:b.count, products:b.products}, null, 2);
-  const blob = new Blob([content], {type:'application/json'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = 'koc-yedek-' + stamp + '.json';
-  a.click();
-  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+  const res = await saveFileSmart('koc-yedek-' + stamp + '.json', content);
+  if (res && res.canceled) return;
+  if (!res || !res.ok) { alert('❌ Kaydedilemedi: ' + (res && res.error || 'bilinmeyen hata')); return; }
+  if (res.path && !res.browser) flash('✓ Yedek kaydedildi: ' + res.path, true);
 }
 
 // ── DIŞA AKTAR — JSON veya Excel (CSV) seçtir ──
@@ -3692,7 +3688,25 @@ function exportProductsJson() {
   alert('Geçersiz seçim. Sadece 1 veya 2 yazmalısın.');
 }
 
-function doExportJson() {
+// Yedeği diske kaydet — Electron'da gerçek "Farklı Kaydet" penceresi açılır,
+// kullanıcı klasör+isim seçer. Tarayıcıda eski görünmez <a download> yöntemine düşer.
+// Dönüş: {ok:true, path} | {canceled:true} | {ok:false, error}
+async function saveFileSmart(defaultName, contents) {
+  if (window.kocFile && window.kocFile.save) {
+    return await window.kocFile.save(defaultName, contents);
+  }
+  // Tarayıcı yöntemi (fallback)
+  const isCsv = /\.csv$/i.test(defaultName);
+  const blob = new Blob([contents], { type: isCsv ? 'text/csv;charset=utf-8;' : 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = defaultName;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return { ok: true, path: defaultName, browser: true };
+}
+
+async function doExportJson() {
   const d = new Date();
   const stamp = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') + '_' + String(d.getHours()).padStart(2,'0') + String(d.getMinutes()).padStart(2,'0');
   // V7.2: Tam yedek = ürünler + satışlar + bekleyenler
@@ -3709,21 +3723,20 @@ function doExportJson() {
     // Eski alanlarla geriye uyumluluk:
     count: products.length
   };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = 'koc-tam-yedek-' + stamp + '.json';
-  a.click();
-  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+  const name = 'koc-tam-yedek-' + stamp + '.json';
+  const res = await saveFileSmart(name, JSON.stringify(payload, null, 2));
+  if (res && res.canceled) return;
+  if (!res || !res.ok) { alert('❌ Yedek kaydedilemedi: ' + (res && res.error || 'bilinmeyen hata')); return; }
   LS.setItem('koc-son-yedek', String(Date.now()));
-  flash('✓ Tam yedek indirildi: ' + products.length + ' ürün, ' + (sales || []).length + ' satış', true);
+  const nerede = (res.path && !res.browser) ? ('\n📁 ' + res.path) : '';
+  flash('✓ Yedek kaydedildi: ' + products.length + ' ürün, ' + (sales || []).length + ' satış' + nerede, true);
 }
 
 // CSV ayırıcısı olarak NOKTALI VİRGÜL kullanıyoruz çünkü:
 // - Türk Excel'inde fiyatlar virgüllü (25,50), virgül ayırıcı olsa karışır
 // - Noktalı virgül Türk Excel'inde standart
 // İlk satır "sep=;" işareti → Excel otomatik tanıyıp doğru sütunlara bölsün
-function doExportCsv() {
+async function doExportCsv() {
   const d = new Date();
   const stamp = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') + '_' + String(d.getHours()).padStart(2,'0') + String(d.getMinutes()).padStart(2,'0');
 
@@ -3757,14 +3770,14 @@ function doExportCsv() {
   // UTF-8 BOM ekle (Excel'in Türkçe karakterleri doğru okuması için kritik)
   const BOM = '\ufeff';
   const csvContent = BOM + rows.join('\r\n');
-  const blob = new Blob([csvContent], {type: 'text/csv;charset=utf-8;'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = 'koc-urunler-' + stamp + '.csv';
-  a.click();
-  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+  const name = 'koc-urunler-' + stamp + '.csv';
+  const res = await saveFileSmart(name, csvContent);
+  if (res && res.canceled) return;
+  if (!res || !res.ok) { alert('❌ CSV kaydedilemedi: ' + (res && res.error || 'bilinmeyen hata')); return; }
+  LS.setItem('koc-son-yedek', String(Date.now()));
+  const nerede = (res.path && !res.browser) ? ('📁 ' + res.path + '\n\n') : '';
   alert(
-    '✓ ' + products.length + ' ürün CSV olarak indirildi.\n\n' +
+    '✓ ' + products.length + ' ürün CSV olarak kaydedildi.\n' + nerede + '\n' +
     '📋 Excel\'de açmak için:\n' +
     '   Dosyaya çift tıkla → Excel otomatik açar.\n\n' +
     '💰 Zam/fiyat güncellemesi için:\n' +
@@ -3776,7 +3789,18 @@ function doExportCsv() {
 }
 
 // ── İÇE AKTAR — JSON veya CSV dosyası yükle ──
-function importProductsJson() {
+async function importProductsJson() {
+  // Electron: gerçek "Aç" penceresi
+  if (window.kocFile && window.kocFile.open) {
+    let res;
+    try { res = await window.kocFile.open(); }
+    catch(e) { alert('❌ Dosya açılamadı: ' + e.message); return; }
+    if (!res || res.canceled) return;
+    if (!res.ok) { alert('❌ Dosya açılamadı: ' + (res.error || 'bilinmeyen hata')); return; }
+    processImportedFile(res.contents, res.path || '');
+    return;
+  }
+  // Tarayıcı yöntemi (fallback)
   const inp = document.createElement('input');
   inp.type = 'file';
   inp.accept = '.json,.csv,application/json,text/csv';
@@ -3784,9 +3808,15 @@ function importProductsJson() {
     const f = e.target.files[0];
     if (!f) return;
     const reader = new FileReader();
-    reader.onload = function(ev) {
-      const txt = ev.target.result;
-      const isCsv = /\.csv$/i.test(f.name) || txt.trim().startsWith('sep=;') || txt.trim().startsWith('\ufeffsep=;') || (txt.split('\n')[0].includes('BARKOD') && txt.includes(';'));
+    reader.onload = function(ev) { processImportedFile(ev.target.result, f.name); };
+    reader.readAsText(f, 'UTF-8');
+  };
+  inp.click();
+}
+
+// İçe aktarma mantığı — kaynak (Electron dialog veya tarayıcı) fark etmez.
+function processImportedFile(txt, fileName) {
+      const isCsv = /\.csv$/i.test(fileName) || txt.trim().startsWith('sep=;') || txt.trim().startsWith('\ufeffsep=;') || (txt.split('\n')[0].includes('BARKOD') && txt.includes(';'));
       try {
         let list;
         if (isCsv) {
@@ -3876,10 +3906,6 @@ function importProductsJson() {
       } catch(err) {
         alert('❌ Dosya okunamadı: ' + err.message);
       }
-    };
-    reader.readAsText(f, 'UTF-8');
-  };
-  inp.click();
 }
 
 // CSV parser — noktalı virgül ayırıcılı, Türkçe virgüllü sayıları anlar

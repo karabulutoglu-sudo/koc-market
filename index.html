@@ -483,7 +483,6 @@ input::placeholder { color: var(--soft); }
       <button onclick="openBackupManager()" style="padding:10px 14px;border-radius:8px;border:none;background:linear-gradient(135deg,var(--accent),var(--accent3));color:#fff;font-weight:700;font-size:13px" title="Yanlış yaptığında eski hâline dönmek için otomatik yedekleri görüntüle">💾 Geri Al</button>
       <button onclick="exportProductsJson()" style="padding:10px 14px;border-radius:8px;border:none;background:#2E8B57;color:#fff;font-weight:700;font-size:13px" title="Tüm ürün listeni bilgisayara indir (gerçek yedek)">⬇ Dosyaya Kaydet</button>
       <button onclick="importProductsJson()" style="padding:10px 14px;border-radius:8px;border:none;background:#6C3483;color:#fff;font-weight:700;font-size:13px" title="Kaydettiğin yedek dosyasını geri yükle">⬆ Dosyadan Getir</button>
-      <button id="hafiza-btn" onclick="hafizaModalAc()" title="Tarayıcı hafıza durumu — tıklayarak yönetim penceresini açın" style="padding:10px 14px;border-radius:8px;border:1.5px solid #16a34a;background:rgba(34,197,94,.08);color:#15803d;font-weight:700;font-size:13px;display:inline-flex;align-items:center;gap:5px">💾 Hafıza <span id="hafiza-info">--</span></button>
       <button onclick="openHelpModal()" style="padding:10px 12px;border-radius:8px;border:2px solid var(--accent);background:transparent;color:var(--accent);font-weight:800;font-size:13px" title="Bu butonların ne işe yaradığını öğren">ℹ️ Yardım</button>
     </div>
     <div id="addFormArea" class="hidden"></div>
@@ -1079,8 +1078,6 @@ function safeSaveJSON(key, value) {
         LS.setItem(key + '-emergency-ts', String(Date.now()));
       } catch(e) {}
     }
-    // v13: hafıza göstergesi güncelle
-    try { if (typeof hafizaGoster === 'function') hafizaGoster(); } catch(e) {}
     return true;
   } catch (e) {
     if (e && (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014 ||
@@ -1102,44 +1099,7 @@ function safeSaveJSON(key, value) {
   }
 }
 
-// ── 3) STORAGE KOTA İZLEYİCİ ──
-// Periyodik kontrol: %80 → toast uyarı, %95 → modal zorunlu uyarı.
-function checkStorageQuota(silent) {
-  if (!navigator.storage || !navigator.storage.estimate) {
-    // Eski tarayıcılar için kaba tahmin: tüm anahtarların byte uzunluğunu topla
-    let total = 0;
-    try {
-      for (let i = 0; i < LS.length; i++) {
-        const k = LS.key(i);
-        const v = LS.getItem(k) || '';
-        total += k.length + v.length;
-      }
-    } catch(e) { return; }
-    // Tipik browser limiti ~5MB; %80'i ~4MB
-    const mb = total / (1024 * 1024);
-    if (mb > 4 && !silent) {
-      flash && flash('⚠ Hafıza ' + mb.toFixed(1) + ' MB / ~5 MB. Yedek al, eski yedekleri temizle.', false);
-    }
-    return;
-  }
-  navigator.storage.estimate().then(est => {
-    const usage = est.usage || 0;
-    const quota = est.quota || 1;
-    const ratio = usage / quota;
-    if (ratio > 0.95) {
-      alert(
-        '🚨 TARAYICI HAFIZASI DOLDU (%' + Math.round(ratio * 100) + ')\n\n' +
-        'Kullanılan: ' + (usage / (1024*1024)).toFixed(1) + ' MB / ' + (quota / (1024*1024)).toFixed(0) + ' MB\n\n' +
-        'HEMEN ⬇ Dosyaya Kaydet ile bilgisayara yedek al!\n' +
-        'Sonra eski yedekleri temizle, yoksa yeni satışlar kaydedilemeyecek.'
-      );
-    } else if (ratio > 0.8 && !silent) {
-      flash && flash('⚠ Hafıza %' + Math.round(ratio * 100) + ' dolu — yedek alıp eski yedekleri temizle', false);
-    }
-  }).catch(() => {});
-}
-
-// ── 4) ÇOKLU SEKME ALGILAYICI ──
+// ── 3) ÇOKLU SEKME ALGILAYICI ──
 // Sadece STORAGE event kullanıyoruz (BroadcastChannel kaldırıldı — fazlalıktı).
 // Storage event başka sekmede ana veri değiştiğinde tetiklenir; o anda
 // kullanıcıya sayfayı yenileme teklifi gösterilir. Bu, gerçek çakışmaları
@@ -1219,327 +1179,6 @@ function flash(msg, ok) {
   t.className = 'toast ' + (ok ? 'toast-ok' : 'toast-err');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.add('hidden'), 2000);
-}
-
-// ╔══════════════════════════════════════════════════════════════════╗
-// ║   v13: HAFIZA YÖNETİMİ (Akaryakıt v16'dan port edildi)          ║
-// ║   • Görsel sürekli gösterge (yeşil/sarı/kırmızı)                 ║
-// ║   • Tek tıkla yönetim paneli — F12/console gerekmez              ║
-// ║   • Yetim/eski sürüm anahtarları otomatik tespit                 ║
-// ║   • Sayfa açılışında proaktif kontrol                            ║
-// ╚══════════════════════════════════════════════════════════════════╝
-
-const HAFIZA_LIMIT_BYTES = 5 * 1024 * 1024; // 5MB tipik tahmin
-
-// Bu uygulamaya ait BİLİNEN localStorage anahtarları
-const HAFIZA_BILINEN_KEYLER = [
-  'koc-prods','koc-prods-shadow','koc-prods-emergency','koc-prods-emergency-ts',
-  'koc-sales','koc-sales-shadow','koc-sales-emergency','koc-sales-emergency-ts',
-  'koc-held','koc-held-shadow','koc-held-emergency','koc-held-emergency-ts',
-  'koc-backups','koc-son-yedek','koc-son-acilis-gunu',
-  'koc-fresh-start-v8','koc-kat-birlesim-v1','koc-kdv-migrated-v1',
-  'koc-kdv-sigara-fix-v10','koc-ulker-v6-yuklendi'
-];
-
-// v13: Aynı tarayıcıda çalışan DİĞER UYGULAMALARIN prefix'leri
-// (örnek: Akaryakıt Takip 'vt2_' kullanır). Bu prefix'ler "yetim" sayılmaz,
-// sadece "başka uygulama" olarak işaretlenir, ASLA otomatik silinmez.
-const HAFIZA_DIGER_UYGULAMALAR = {
-  'vt2_': { ad: 'Akaryakıt Takip', ikon: '⛽' }
-};
-
-function _anahtarSinifi(k) {
-  if (HAFIZA_BILINEN_KEYLER.includes(k)) return { tip: 'kendi', uygulama: null };
-  for (const prefix in HAFIZA_DIGER_UYGULAMALAR) {
-    if (k.startsWith(prefix)) {
-      return { tip: 'diger', uygulama: HAFIZA_DIGER_UYGULAMALAR[prefix] };
-    }
-  }
-  return { tip: 'yetim', uygulama: null };
-}
-
-function _hafizaKullanim() {
-  let toplam = 0;
-  let detay = {};
-  for (let i = 0; i < LS.length; i++) {
-    const k = LS.key(i);
-    const v = LS.getItem(k) || '';
-    const boyut = (k.length + v.length) * 2;
-    toplam += boyut;
-    detay[k] = boyut;
-  }
-  const yetim = {};
-  const diger = {};
-  let yetimToplam = 0;
-  let digerToplam = 0;
-  for (const k in detay) {
-    const sinif = _anahtarSinifi(k);
-    if (sinif.tip === 'yetim') {
-      yetim[k] = detay[k];
-      yetimToplam += detay[k];
-    } else if (sinif.tip === 'diger') {
-      diger[k] = { boyut: detay[k], uygulama: sinif.uygulama };
-      digerToplam += detay[k];
-    }
-  }
-  return { toplam, detay, yetim, yetimToplam, diger, digerToplam, yuzde: Math.min(100, Math.round((toplam / HAFIZA_LIMIT_BYTES) * 100)) };
-}
-
-function hafizaGoster() {
-  const el = document.getElementById('hafiza-info');
-  const btn = document.getElementById('hafiza-btn');
-  if (!el || !btn) return;
-  const k = _hafizaKullanim();
-  const yuzde = k.yuzde;
-  const mb = (k.toplam / 1024 / 1024).toFixed(2);
-  el.textContent = '%' + yuzde;
-  btn.title = `Tarayıcı hafıza kullanımı: ${mb} MB / ~5 MB (%${yuzde}) — tıklayın`;
-  if (yuzde < 70) {
-    btn.style.borderColor = '#16a34a';
-    btn.style.background = 'rgba(34,197,94,.08)';
-    btn.style.color = '#15803d';
-    btn.style.animation = 'none';
-  } else if (yuzde < 90) {
-    btn.style.borderColor = '#d97706';
-    btn.style.background = 'rgba(245,158,11,.12)';
-    btn.style.color = '#b45309';
-    btn.style.animation = 'none';
-  } else {
-    btn.style.borderColor = '#dc2626';
-    btn.style.background = 'rgba(220,38,38,.15)';
-    btn.style.color = '#991b1b';
-    btn.style.animation = 'pulseHafiza 1.5s infinite';
-  }
-}
-
-(function() {
-  const style = document.createElement('style');
-  style.textContent = '@keyframes pulseHafiza{0%,100%{opacity:1}50%{opacity:.5}}';
-  document.head.appendChild(style);
-})();
-
-function _formatBoyut(b) {
-  if (b < 1024) return b + ' B';
-  if (b < 1024 * 1024) return (b / 1024).toFixed(0) + ' KB';
-  return (b / 1024 / 1024).toFixed(2) + ' MB';
-}
-
-function _hafizaAciklama(k) {
-  const aciklamalar = {
-    'koc-prods': 'Ana ürün listesi',
-    'koc-prods-shadow': 'Ürün listesinin gölge kopyası (otomatik)',
-    'koc-prods-emergency': 'Ürün acil yedek (5 dk\'da bir)',
-    'koc-prods-emergency-ts': 'Ürün acil yedek zaman damgası',
-    'koc-sales': 'Satış geçmişi',
-    'koc-sales-shadow': 'Satış geçmişinin gölge kopyası',
-    'koc-sales-emergency': 'Satış acil yedek',
-    'koc-sales-emergency-ts': 'Satış acil yedek zaman damgası',
-    'koc-held': 'Beklemedeki satışlar',
-    'koc-held-shadow': 'Beklemedeki satışların gölgesi',
-    'koc-held-emergency': 'Beklemedeki satış acil yedek',
-    'koc-held-emergency-ts': 'Beklemedeki satış acil yedek zamanı',
-    'koc-backups': 'Otomatik yedekler (kurtarma noktaları)',
-    'koc-son-yedek': 'Son yedek zaman damgası',
-    'koc-son-acilis-gunu': 'Son açılış günü',
-    'koc-fresh-start-v8': 'v8 ilk kurulum işareti',
-    'koc-kat-birlesim-v1': 'Kategori birleşim işareti',
-    'koc-kdv-migrated-v1': 'KDV migrasyon işareti',
-    'koc-kdv-sigara-fix-v10': 'KDV sigara düzeltme işareti',
-    'koc-ulker-v6-yuklendi': 'Ülker ürün paketi yükleme işareti'
-  };
-  if (aciklamalar[k]) return aciklamalar[k];
-  const sinif = _anahtarSinifi(k);
-  if (sinif.tip === 'diger') {
-    return `<span style="color:#7c3aed;font-weight:600">${sinif.uygulama.ikon} ${sinif.uygulama.ad} uygulamasının verisi (DOKUNMA!)</span>`;
-  }
-  return '<em style="color:#dc2626">⚠️ YETİM/BİLİNMEYEN anahtar — eski sürümden kalmış olabilir</em>';
-}
-
-function hafizaModalAc() {
-  const k = _hafizaKullanim();
-  const mb = (k.toplam / 1024 / 1024).toFixed(2);
-  const yuzde = k.yuzde;
-  const yetimSayi = Object.keys(k.yetim).length;
-  const yetimMB = (k.yetimToplam / 1024 / 1024).toFixed(2);
-  const digerSayi = Object.keys(k.diger).length;
-  const digerMB = (k.digerToplam / 1024 / 1024).toFixed(2);
-  const backups = JSON.parse(LS.getItem('koc-backups') || '[]');
-
-  let durum, durumRenk, durumIkon;
-  if (yuzde < 70) { durum = 'Sağlıklı'; durumRenk = '#16a34a'; durumIkon = '✅'; }
-  else if (yuzde < 90) { durum = 'Dikkat'; durumRenk = '#d97706'; durumIkon = '⚠️'; }
-  else { durum = 'KRİTİK'; durumRenk = '#dc2626'; durumIkon = '🚨'; }
-
-  const tumAnahtarlar = Object.entries(k.detay).sort((a, b) => b[1] - a[1]);
-
-  let anahtarHTML = '';
-  for (const [anahtar, boyut] of tumAnahtarlar) {
-    const sinif = _anahtarSinifi(anahtar);
-    let renk, arkaplan, ikon;
-    if (sinif.tip === 'kendi') {
-      renk = '#475569'; arkaplan = 'transparent'; ikon = '• ';
-    } else if (sinif.tip === 'diger') {
-      renk = '#7c3aed'; arkaplan = 'rgba(124,58,237,.05)'; ikon = sinif.uygulama.ikon + ' ';
-    } else {
-      renk = '#dc2626'; arkaplan = 'rgba(220,38,38,.06)'; ikon = '⚠️ ';
-    }
-    anahtarHTML += `<div style="padding:8px 10px;border-bottom:1px solid #e5e7eb;background:${arkaplan};display:flex;align-items:center;justify-content:space-between;gap:10px">
-      <div style="flex:1;min-width:0">
-        <div style="font-family:ui-monospace,monospace;font-size:12px;font-weight:700;color:${renk};word-break:break-all">${ikon}${anahtar}</div>
-        <div style="font-size:11px;color:#64748b;margin-top:2px">${_hafizaAciklama(anahtar)}</div>
-      </div>
-      <div style="font-family:ui-monospace,monospace;font-size:12.5px;font-weight:700;color:${renk};white-space:nowrap">${_formatBoyut(boyut)}</div>
-    </div>`;
-  }
-
-  const eski = document.getElementById('mHafiza');
-  if (eski) eski.remove();
-
-  const ov = document.createElement('div');
-  ov.id = 'mHafiza';
-  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(3px)';
-  ov.innerHTML = `
-    <div style="background:#fff;border-radius:14px;max-width:640px;width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3);font-family:Arial,sans-serif">
-      <div style="padding:20px 24px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:#fff;z-index:1">
-        <h3 style="margin:0;font-size:18px;color:#0f172a;font-weight:800">💾 Hafıza Yönetimi</h3>
-        <button onclick="document.getElementById('mHafiza').remove()" style="background:none;border:none;font-size:24px;color:#64748b;cursor:pointer;line-height:1;padding:0 4px">×</button>
-      </div>
-      <div style="padding:20px 24px">
-        <div style="background:linear-gradient(135deg,${durumRenk}15,${durumRenk}05);border:1.5px solid ${durumRenk}40;border-radius:10px;padding:16px;margin-bottom:18px">
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-            <span style="font-size:24px">${durumIkon}</span>
-            <div>
-              <div style="font-weight:800;font-size:16px;color:${durumRenk}">Durum: ${durum}</div>
-              <div style="font-size:13px;color:#475569">Toplam kullanım: <strong>${mb} MB</strong> / ~5 MB tahmini (%${yuzde})</div>
-            </div>
-          </div>
-          <div style="background:#f1f5f9;border-radius:8px;height:14px;overflow:hidden;border:1px solid #e2e8f0">
-            <div style="height:100%;background:${durumRenk};width:${yuzde}%;transition:width .3s;border-radius:8px"></div>
-          </div>
-        </div>
-        
-        ${digerSayi > 0 ? `<div style="background:#f5f3ff;border:1.5px solid #8b5cf6;border-radius:10px;padding:14px;margin-bottom:14px">
-          <div style="font-weight:800;font-size:14px;color:#5b21b6;margin-bottom:6px">⛽ ${digerSayi} Anahtar Diğer Uygulamadan (${digerMB} MB)</div>
-          <div style="font-size:12.5px;color:#4c1d95;line-height:1.5">Bu anahtarlar aynı tarayıcıda çalışan <strong>başka uygulamalara</strong> ait (örnek: Akaryakıt Takip). Aşağıda <span style="color:#7c3aed;font-weight:700">mor</span> işaretli olanlar. <strong>Bunlara ASLA dokunma</strong> — silersen diğer uygulamanın verileri uçar.</div>
-        </div>` : ''}
-        
-        ${yetimSayi > 0 ? `<div style="background:#fee2e2;border:1.5px solid #dc2626;border-radius:10px;padding:14px;margin-bottom:14px">
-          <div style="font-weight:800;font-size:14px;color:#991b1b;margin-bottom:6px">⚠️ ${yetimSayi} Gerçek Yetim Anahtar (${yetimMB} MB)</div>
-          <div style="font-size:12.5px;color:#7f1d1d;line-height:1.5;margin-bottom:10px">Bu anahtarlar bilinen hiçbir uygulamaya ait değil — büyük ihtimalle eski sürümlerden kalıntı.</div>
-          <button onclick="hafizaYetimSil()" style="padding:10px 14px;border-radius:7px;border:none;background:#dc2626;color:#fff;font-weight:700;font-size:13px;cursor:pointer;width:100%">🗑️ Sadece Yetim Anahtarları Sil (${yetimMB} MB)</button>
-        </div>` : ''}
-        
-        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:0;margin-bottom:14px;overflow:hidden">
-          <div style="padding:12px 14px;background:#f1f5f9;border-bottom:1px solid #e2e8f0;font-weight:700;font-size:13px;color:#334155">📊 Tüm localStorage Anahtarları (${tumAnahtarlar.length} adet — büyükten küçüğe)</div>
-          ${anahtarHTML}
-        </div>
-        
-        <div style="background:#f0f9ff;border-left:4px solid #0e7c86;border-radius:6px;padding:12px;margin-bottom:14px;font-size:12.5px;color:#0c4a6e;line-height:1.55">
-          <strong>ℹ️ Renk açıklaması:</strong> <span style="color:#475569">• Gri = bu uygulamanın verisi</span> · <span style="color:#7c3aed">⛽ Mor = diğer uygulamanın verisi (dokunma)</span> · <span style="color:#dc2626">⚠️ Kırmızı = gerçek yetim (silinebilir)</span><br>
-          ${backups.length} adet otomatik yedek var. Maksimum ${MAX_BACKUPS} tane saklanır, fazlası otomatik silinir.
-        </div>
-        
-        <div style="display:grid;grid-template-columns:1fr;gap:10px">
-          ${backups.length > 1 ? `<button onclick="hafizaTemizleYari()" style="padding:12px 16px;border-radius:8px;border:1.5px solid #d97706;background:#fff;color:#b45309;font-weight:700;font-size:13.5px;cursor:pointer;text-align:left">
-            🧹 Eski Yedeklerin Yarısını Temizle
-            <div style="font-weight:500;font-size:11.5px;color:#92400e;margin-top:3px">En eski ${Math.ceil(backups.length / 2)} yedek silinir, en yeni ${Math.floor(backups.length / 2)} korunur</div>
-          </button>` : ''}
-          ${backups.length > 0 ? `<button onclick="hafizaTemizleHepsi()" style="padding:12px 16px;border-radius:8px;border:1.5px solid #dc2626;background:#fff;color:#991b1b;font-weight:700;font-size:13.5px;cursor:pointer;text-align:left">
-            🗑️ Tüm Otomatik Yedekleri Sil
-            <div style="font-weight:500;font-size:11.5px;color:#7f1d1d;margin-top:3px">Maksimum yer açar — ürün/satış verin korunur ama 💾 Geri Al menüsü boşalır</div>
-          </button>` : ''}
-          <button onclick="document.getElementById('mHafiza').remove();exportProductsJson()" style="padding:12px 16px;border-radius:8px;border:1.5px solid #0e7c86;background:#fff;color:#0a5d65;font-weight:700;font-size:13.5px;cursor:pointer;text-align:left">
-            ⬇ Bilgisayara Yedek Al (her zaman önerilir)
-            <div style="font-weight:500;font-size:11.5px;color:#155e75;margin-top:3px">JSON dosyası olarak masaüstüne indirir</div>
-          </button>
-        </div>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(ov);
-  ov.addEventListener('click', function(e) { if (e.target === ov) ov.remove(); });
-}
-
-function hafizaYetimSil() {
-  const k = _hafizaKullanim();
-  const yetimAnahtarlar = Object.keys(k.yetim);
-  if (yetimAnahtarlar.length === 0) {
-    flash('ℹ️ Yetim anahtar yok', true);
-    return;
-  }
-  const liste = yetimAnahtarlar.slice(0, 8).map(a => '• ' + a).join('\n') +
-    (yetimAnahtarlar.length > 8 ? '\n... ve ' + (yetimAnahtarlar.length - 8) + ' tane daha' : '');
-  if (!confirm(`Şu yetim anahtarlar silinecek:\n\n${liste}\n\nBu Koç Market verilerini ETKİLEMEZ — sadece eski/bilinmeyen anahtarları siler. Devam edilsin mi?`)) return;
-  let silinen = 0;
-  for (const a of yetimAnahtarlar) {
-    try { LS.removeItem(a); silinen++; } catch (e) {}
-  }
-  document.getElementById('mHafiza')?.remove();
-  hafizaGoster();
-  const yeni = _hafizaKullanim();
-  flash(`✅ ${silinen} yetim anahtar silindi. Şimdi: %${yeni.yuzde}`, true);
-}
-
-function hafizaTemizleYari() {
-  const backups = JSON.parse(LS.getItem('koc-backups') || '[]');
-  if (backups.length === 0) { flash('ℹ️ Silinecek yedek yok', true); return; }
-  if (!confirm(`En eski ${Math.ceil(backups.length / 2)} yedek silinecek, en yeni ${Math.floor(backups.length / 2)} adet korunacak. Devam edilsin mi?`)) return;
-  try {
-    const yenisi = backups.slice(0, Math.floor(backups.length / 2));
-    if (yenisi.length === 0) LS.removeItem('koc-backups');
-    else LS.setItem('koc-backups', JSON.stringify(yenisi));
-    document.getElementById('mHafiza')?.remove();
-    hafizaGoster();
-    flash(`✅ ${backups.length - yenisi.length} eski yedek silindi. Şimdi: %${_hafizaKullanim().yuzde}`, true);
-  } catch (e) {
-    flash('⚠️ Hata: ' + e.message, false);
-  }
-}
-
-function hafizaTemizleHepsi() {
-  if (!confirm('TÜM otomatik yedekler silinecek. Ürün ve satış verin etkilenmez ama 💾 Geri Al menüsü boşalır. Bilgisayara yedek aldın mı? Devam edilsin mi?')) return;
-  try {
-    LS.removeItem('koc-backups');
-    LS.removeItem('koc-prods-emergency');
-    LS.removeItem('koc-prods-emergency-ts');
-    LS.removeItem('koc-sales-emergency');
-    LS.removeItem('koc-sales-emergency-ts');
-    document.getElementById('mHafiza')?.remove();
-    hafizaGoster();
-    flash(`✅ Tüm yedekler silindi. Şimdi: %${_hafizaKullanim().yuzde}`, true);
-  } catch (e) {
-    flash('⚠️ Hata: ' + e.message, false);
-  }
-}
-
-function hafizaProaktifKontrol() {
-  const k = _hafizaKullanim();
-  if (k.yuzde >= 85) {
-    const backups = JSON.parse(LS.getItem('koc-backups') || '[]');
-    if (backups.length >= 2) {
-      const yenisi = backups.slice(0, Math.floor(backups.length / 2));
-      try {
-        LS.setItem('koc-backups', JSON.stringify(yenisi));
-        const yeni = _hafizaKullanim();
-        setTimeout(() => {
-          alert('🧹 OTOMATİK TEMİZLİK\n\nHafıza %' + k.yuzde + ' doluydu. ' + (backups.length - yenisi.length) + ' eski otomatik yedek temizlendi. Şimdi: %' + yeni.yuzde + '\n\nDetay için ÜRÜNLER sekmesindeki "💾 Hafıza" butonunu kullan.');
-        }, 2000);
-      } catch (e) {}
-    }
-    if (Object.keys(k.yetim).length > 0) {
-      setTimeout(() => {
-        flash('⚠ ' + Object.keys(k.yetim).length + ' yetim anahtar var (' + (k.yetimToplam / 1024 / 1024).toFixed(2) + ' MB). ÜRÜNLER → 💾 Hafıza\'dan temizle.', false);
-      }, 4500);
-    }
-  }
-  hafizaGoster();
-}
-
-// Sayfa hazır olunca hafıza durumunu göster ve proaktif kontrol et
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => setTimeout(hafizaProaktifKontrol, 1000));
-} else {
-  setTimeout(hafizaProaktifKontrol, 1000);
 }
 
 // ── TABS ──
@@ -3007,10 +2646,7 @@ function _bugunKey(){
   return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
 }
 function saglikKontrolu() {
-  // 1) Storage kotası
-  checkStorageQuota(true);
-
-  // 2) Veri tutarlılığı: array tipinde mi?
+  // 1) Veri tutarlılığı: array tipinde mi?
   if (!Array.isArray(products)) {
     alert('⚠ Ürün listesi formatı bozuk! Sıfırlamak yerine 💾 Geri Al menüsünden son sağlam yedeği geri yükle.');
     return;
@@ -3109,9 +2745,6 @@ async function _hemenYedekAl() {
 }
 
 setTimeout(saglikKontrolu, 3000);
-
-// Periyodik kota kontrolü (10 dakikada bir, sessizce)
-setInterval(() => checkStorageQuota(false), 10 * 60 * 1000);
 
 // ── HISTORY ──
 // ══════════════════════════════════════════════════════════

@@ -1230,6 +1230,8 @@ function parsePrice(str) {
     el.value = '';
     if (timer) { clearTimeout(timer); timer = null; }
     try { renderProds(); } catch (e) {}                   // birikmiş listeyi göster
+    // Hızlı Ekleme açıkken odağı prodSearch'e geri verme (form içinde kalsın)
+    if (typeof _quickAddOpen === 'function' && _quickAddOpen()) return true;
     try { el.focus(); } catch (e) {}                       // sıradaki okutmaya hazır
     return true;
   }
@@ -1590,7 +1592,15 @@ function appAlert(msgOrOpts){
 
 // ÜRÜNLER ekranındaki arama kutusuna odağı geri ver — silme/toplu işlem sonrası
 // kutu "ölü" kalmasın, kullanıcı hemen yazmaya/barkod okutmaya devam edebilsin.
+// Hızlı Ekleme formu şu an AÇIK mı? Açıksa hiçbir otomatik odak kodu
+// odağı prodSearch'e KAÇIRMAMALI — kullanıcı Ekle'ye basana kadar odak
+// formun içinde kalmalı (aksi halde son alandan sonra "Ürün ara"ya kaçıyor).
+function _quickAddOpen(){
+  const area = document.getElementById('addFormArea');
+  return !!(area && !area.classList.contains('hidden') && area.dataset.mode === 'quick');
+}
 function _focusProdSearch(){
+  if (_quickAddOpen()) return;                 // form açıkken odağı çalma
   const el = document.getElementById('prodSearch');
   if (el && el.offsetParent !== null) { try { el.focus(); } catch(e){} }
 }
@@ -2493,6 +2503,9 @@ setInterval(function(){
   }
   // Modal/overlay açıksa karışma
   if (document.querySelector('.modal-overlay.show, .price-overlay.show, #editModal:not(.hidden)')) return;
+  // Hızlı Ekleme formu açıksa odağı prodSearch'e ÇALMA — kullanıcı "Ekle" butonuna
+  // (BUTTON, editable değil) geçtiğinde bekçi onu prodSearch'e kaçırıyordu.
+  if (_quickAddOpen()) return;
   const saleActive = document.getElementById('sec-sale')?.classList.contains('active');
   const prodsActive = document.getElementById('sec-products')?.classList.contains('active');
   if (saleActive) {
@@ -2553,8 +2566,9 @@ document.addEventListener('keydown', function(e){
   const inp = _barcodeFocusTarget();        // KURAL 2 + 3
   if (!inp) {
     // ÜRÜNLER ekranında prodSearch'e fallback (kutu pasif kalmasın)
+    // — ama Hızlı Ekleme formu açıkken DEĞİL (odak formdan kaçmasın).
     const productsTab = document.getElementById('sec-products');
-    if (productsTab && productsTab.classList.contains('active')) {
+    if (productsTab && productsTab.classList.contains('active') && !_quickAddOpen()) {
       const ps = document.getElementById('prodSearch');
       const overlayOpen = document.querySelector('.modal-overlay.show, #editModal:not(.hidden)');
       if (ps && ps.offsetParent !== null && !overlayOpen

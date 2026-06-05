@@ -4107,16 +4107,43 @@ function splitCsvLine(line) {
   return out;
 }
 
-// ── FİYAT GÜNCELLEME SİHİRBAZI ──
-// Üç yol sunar: Excel indir / Excel yükle / Kategoriye yüzde zam uygula
+// ── FİYAT GÜNCELLEME SİHİRBAZI (SEKMELİ) ──
+// Sekmeler: Seçili ürünler (varsayılan) · Kategori · Excel · PDF
+// Zam türü/yuvarlama state'i
+let pwZamType = 'pct';   // 'pct' = yüzde (%), 'fixed' = sabit (₺)
+
+// Tüm zam hesaplarında ortak yuvarlama (kategori + seçili ürün aynı mantığı kullanır)
+function _roundZam(newPrice, yuvarla) {
+  if (yuvarla === '0.5') return Math.round(newPrice * 2) / 2;
+  if (yuvarla === '1') return Math.round(newPrice);
+  if (yuvarla === '5') return Math.round(newPrice / 5) * 5;
+  return Math.round(newPrice * 100) / 100;
+}
+
+function priceWizTab(name) {
+  ['sel','cat','excel','pdf'].forEach(t => {
+    const c = document.getElementById('pwTab-' + t);
+    const b = document.getElementById('pwBtn-' + t);
+    if (c) c.style.display = (t === name) ? 'block' : 'none';
+    if (b) {
+      const on = (t === name);
+      b.style.background = on ? 'linear-gradient(135deg,#D4AC0D,#F1C40F)' : 'transparent';
+      b.style.color = on ? '#2C1810' : 'var(--muted)';
+      b.style.fontWeight = on ? '900' : '700';
+    }
+  });
+}
+
 function openPriceUpdateWizard() {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay show';
   overlay.id = 'priceWizOverlay';
   overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+  pwZamType = 'pct';
 
   // Kategori seçenekleri — toplu zam için
   const catOpts = ['(Tümü)', ...MASTER_CATS].map(c => `<option value="${c}">${c}</option>`).join('');
+  const tabBtn = (id, label) => `<button id="pwBtn-${id}" onclick="priceWizTab('${id}')" style="flex:1;padding:10px 6px;border-radius:8px;border:none;background:transparent;color:var(--muted);font-weight:700;font-size:13px;cursor:pointer;transition:all .12s">${label}</button>`;
 
   overlay.innerHTML = `
     <div style="background:var(--card);border-radius:14px;padding:22px;max-width:680px;width:100%;max-height:92vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.4)">
@@ -4124,40 +4151,58 @@ function openPriceUpdateWizard() {
         <div style="font-size:20px;font-weight:900;color:#D4AC0D">💰 Zam / Fiyat Güncelleme</div>
         <button onclick="document.getElementById('priceWizOverlay').remove()" style="background:none;border:none;color:var(--muted);font-size:28px;cursor:pointer;line-height:1">×</button>
       </div>
+
+      <!-- SEKME ÇUBUĞU -->
+      <div style="display:flex;gap:6px;background:var(--card-dark);border:1px solid var(--border);border-radius:10px;padding:5px;margin-bottom:14px">
+        ${tabBtn('sel','✅ Seçili ürünler')}
+        ${tabBtn('cat','🏷️ Kategori')}
+        ${tabBtn('excel','📊 Excel (çok ürün)')}
+        ${tabBtn('pdf','📄 PDF')}
+      </div>
+
       <div style="overflow-y:auto;flex:1">
 
-        <div style="padding:12px 14px;background:rgba(212,172,13,.12);border-left:4px solid #D4AC0D;border-radius:8px;margin-bottom:14px;font-size:13px;color:var(--text);line-height:1.6">
-          <b>Üç farklı yol var:</b> Tek ürün için <b>ÜRÜNLER listesinden ✎</b> ile düzenle. Birkaç ürün için <b>yol 1</b>. Çok sayıda ürün için <b>yol 2 (Excel)</b>. Bir kategorinin tamamına oranlı zam için <b>yol 3</b>.
+        <!-- SEKME: SEÇİLİ ÜRÜNLER -->
+        <div id="pwTab-sel" style="display:none">
+          <div id="pwSelInfo" style="padding:10px 14px;background:rgba(212,172,13,.12);border-left:4px solid #D4AC0D;border-radius:8px;margin-bottom:14px;font-size:13px;color:var(--text);line-height:1.5;font-weight:700"></div>
+
+          <div style="margin-bottom:12px">
+            <label style="font-size:12px;font-weight:700;color:var(--muted);display:block;margin-bottom:6px">ZAM TÜRÜ</label>
+            <div style="display:flex;gap:8px">
+              <button id="pwBtnPct" onclick="pwSetZamType('pct')" style="flex:1;padding:10px;border-radius:8px;border:2px solid var(--border);background:var(--card-dark);color:var(--text);font-weight:800;font-size:14px;cursor:pointer">Yüzde (%)</button>
+              <button id="pwBtnFixed" onclick="pwSetZamType('fixed')" style="flex:1;padding:10px;border-radius:8px;border:2px solid var(--border);background:var(--card-dark);color:var(--text);font-weight:800;font-size:14px;cursor:pointer">Sabit (₺)</button>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+            <div>
+              <label style="font-size:12px;font-weight:700;color:var(--muted);display:block;margin-bottom:4px"><span id="pwSelOranLabel">ORAN (%)</span></label>
+              <input id="pwSelOran" class="modal-input" type="text" inputmode="decimal" placeholder="örn. 15" style="width:100%" oninput="pwRenderSelPreview()">
+              <div style="display:flex;gap:6px;margin-top:6px">
+                <button onclick="pwQuickRate(5)" style="flex:1;padding:6px;border-radius:6px;border:1px solid var(--border);background:var(--card-dark);color:var(--text);font-weight:700;font-size:12px;cursor:pointer">+5</button>
+                <button onclick="pwQuickRate(10)" style="flex:1;padding:6px;border-radius:6px;border:1px solid var(--border);background:var(--card-dark);color:var(--text);font-weight:700;font-size:12px;cursor:pointer">+10</button>
+                <button onclick="pwQuickRate(15)" style="flex:1;padding:6px;border-radius:6px;border:1px solid var(--border);background:var(--card-dark);color:var(--text);font-weight:700;font-size:12px;cursor:pointer">+15</button>
+              </div>
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:700;color:var(--muted);display:block;margin-bottom:4px">YUVARLA</label>
+              <select id="pwSelYuvarla" class="modal-input" style="width:100%" onchange="pwRenderSelPreview()">
+                <option value="none">Yuvarlama (tam hesap)</option>
+                <option value="0.5" selected>En yakın 0,50 TL'ye</option>
+                <option value="1">En yakın 1 TL'ye</option>
+                <option value="5">En yakın 5 TL'ye</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="font-size:12px;font-weight:700;color:var(--muted);margin:14px 0 6px">ÖNİZLEME (eski → yeni)</div>
+          <div id="pwSelPreview" style="max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px;background:var(--card-dark);font-size:13px"></div>
+
+          <button id="pwSelApplyBtn" onclick="applySelectedZam()" style="width:100%;margin-top:12px;padding:12px;border-radius:8px;border:none;background:linear-gradient(135deg,#E67E22,#F39C12);color:#fff;font-weight:900;font-size:15px;cursor:pointer;box-shadow:0 3px 10px rgba(230,126,34,.35)">Zammı uygula</button>
         </div>
 
-        <!-- YOL 1: Birkaç ürün için Hızlı Ekle -->
-        <div style="border:2px solid var(--border);border-radius:10px;padding:16px;margin-bottom:12px;background:var(--card-dark)">
-          <div style="font-weight:900;color:#0E8050;font-size:16px;margin-bottom:8px">🎯 Yol 1 — Birkaç Ürünün Fiyatını Tek Tek Güncelle</div>
-          <div style="font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:10px">
-            ⚡ Hızlı Ekle'yi kullan. Barkodu okut → program o ürünün zaten olduğunu görür → "Güncellemek ister misin?" diye sorar → yeni fiyatı yaz → Enter. Sonra bir sonraki barkodu okut. Seri zam için ideal.
-          </div>
-          <button onclick="document.getElementById('priceWizOverlay').remove();toggleQuickAdd();" style="padding:10px 18px;border-radius:8px;border:none;background:linear-gradient(135deg,#0E8050,#14A060);color:#fff;font-weight:800;font-size:14px;cursor:pointer">⚡ Hızlı Ekle'yi Aç</button>
-        </div>
-
-        <!-- YOL 2: Excel -->
-        <div style="border:2px solid var(--border);border-radius:10px;padding:16px;margin-bottom:12px;background:var(--card-dark)">
-          <div style="font-weight:900;color:#2E8B57;font-size:16px;margin-bottom:8px">📊 Yol 2 — Excel'de Topluca Güncelle (Çok Ürün İçin En Hızlısı)</div>
-          <div style="font-size:13px;color:var(--muted);line-height:1.7;margin-bottom:12px">
-            <b>3 adım:</b><br>
-            <b>①</b> Aşağıdaki <b>⬇ Excel İndir</b> ile tüm ürünleri bilgisayara al<br>
-            <b>②</b> Excel'de çift tıkla, FIYAT sütunundaki değerleri değiştir, Ctrl+S ile CSV olarak kaydet<br>
-            <b>③</b> <b>⬆ Güncel Excel'i Yükle</b> ile dosyayı geri getir, program sadece değişen fiyatları bulup günceller.<br><br>
-            ⚠️ <b>Excel dosyayı XLSX olarak kaydetmek isterse hayır de, CSV kalsın.</b>
-          </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button onclick="doExportCsv()" style="padding:10px 16px;border-radius:8px;border:none;background:#2E8B57;color:#fff;font-weight:800;font-size:13px;cursor:pointer">⬇ Excel İndir (${products.length} ürün)</button>
-            <button onclick="document.getElementById('priceWizOverlay').remove();importProductsJson();" style="padding:10px 16px;border-radius:8px;border:none;background:#6C3483;color:#fff;font-weight:800;font-size:13px;cursor:pointer">⬆ Güncel Excel'i Yükle</button>
-          </div>
-        </div>
-
-        <!-- YOL 3: Yüzde zam -->
-        <div style="border:2px solid #E67E22;border-radius:10px;padding:16px;margin-bottom:12px;background:rgba(230,126,34,.06)">
-          <div style="font-weight:900;color:#C77016;font-size:16px;margin-bottom:8px">🔥 Yol 3 — Toplu Yüzde Zam (Excel Kullanmadan)</div>
+        <!-- SEKME: KATEGORİ (eski Yol 3 — aynen) -->
+        <div id="pwTab-cat" style="display:none">
           <div style="font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:12px">
             Bir kategoriye (mesela Sigara) tamamen %15 zam uygula → bütün ürünler tek seferde güncellenir. Fiyatları yukarı yuvarlamak için küsüratı ayarlayabilirsin.
           </div>
@@ -4192,9 +4237,23 @@ function openPriceUpdateWizard() {
           <button onclick="applyPercentageZam()" style="width:100%;padding:12px;border-radius:8px;border:none;background:linear-gradient(135deg,#E67E22,#F39C12);color:#fff;font-weight:900;font-size:15px;cursor:pointer;box-shadow:0 3px 10px rgba(230,126,34,.35)">📈 ÖNİZLEMEYİ GÖSTER</button>
         </div>
 
-        <!-- YOL 4: PDF -->
-        <div style="border:2px solid #C0392B;border-radius:10px;padding:16px;margin-bottom:4px;background:rgba(192,57,43,.06)">
-          <div style="font-weight:900;color:#C0392B;font-size:16px;margin-bottom:8px">📄 Yol 4 — PDF'ten Okut (Toptancı Fiyat Listesi)</div>
+        <!-- SEKME: EXCEL (eski Yol 2 — aynen) -->
+        <div id="pwTab-excel" style="display:none">
+          <div style="font-size:13px;color:var(--muted);line-height:1.7;margin-bottom:12px">
+            <b>3 adım:</b><br>
+            <b>①</b> Aşağıdaki <b>⬇ Excel İndir</b> ile tüm ürünleri bilgisayara al<br>
+            <b>②</b> Excel'de çift tıkla, FIYAT sütunundaki değerleri değiştir, Ctrl+S ile CSV olarak kaydet<br>
+            <b>③</b> <b>⬆ Güncel Excel'i Yükle</b> ile dosyayı geri getir, program sadece değişen fiyatları bulup günceller.<br><br>
+            ⚠️ <b>Excel dosyayı XLSX olarak kaydetmek isterse hayır de, CSV kalsın.</b>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button onclick="doExportCsv()" style="padding:10px 16px;border-radius:8px;border:none;background:#2E8B57;color:#fff;font-weight:800;font-size:13px;cursor:pointer">⬇ Excel İndir (${products.length} ürün)</button>
+            <button onclick="document.getElementById('priceWizOverlay').remove();importProductsJson();" style="padding:10px 16px;border-radius:8px;border:none;background:#6C3483;color:#fff;font-weight:800;font-size:13px;cursor:pointer">⬆ Güncel Excel'i Yükle</button>
+          </div>
+        </div>
+
+        <!-- SEKME: PDF (eski Yol 4 — aynen) -->
+        <div id="pwTab-pdf" style="display:none">
           <div style="font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:12px">
             Toptancıdan gelen PDF fiyat listesini yükle. Program içindeki <b>barkod + fiyat</b> çiftlerini bulur, her birini ayrı ayrı sana gösterir, <b>sen her satırı onaylarsın</b>. Güvenli — hiçbir şey kör güncellenmez.
           </div>
@@ -4210,6 +4269,105 @@ function openPriceUpdateWizard() {
       </div>
     </div>`;
   document.body.appendChild(overlay);
+  pwSetZamType('pct');      // tür butonlarının görünümünü ayarla
+  priceWizTab('sel');       // varsayılan sekme: Seçili ürünler
+  pwRenderSelPreview();     // ilk önizleme + buton durumu
+}
+
+// "Seçili ürünler" sekmesi — zam türünü değiştir (yüzde / sabit)
+function pwSetZamType(t) {
+  pwZamType = t;
+  const bP = document.getElementById('pwBtnPct');
+  const bF = document.getElementById('pwBtnFixed');
+  const setOn = (el, on) => { if (!el) return;
+    el.style.borderColor = on ? '#E67E22' : 'var(--border)';
+    el.style.background = on ? 'rgba(230,126,34,.15)' : 'var(--card-dark)';
+    el.style.color = on ? '#E67E22' : 'var(--text)';
+  };
+  setOn(bP, t === 'pct');
+  setOn(bF, t === 'fixed');
+  const lbl = document.getElementById('pwSelOranLabel');
+  if (lbl) lbl.textContent = (t === 'pct') ? 'ORAN (%)' : 'TUTAR (₺)';
+  pwRenderSelPreview();
+}
+
+// Hızlı oran butonları (+5 / +10 / +15)
+function pwQuickRate(v) {
+  const inp = document.getElementById('pwSelOran');
+  if (inp) inp.value = String(v);
+  pwRenderSelPreview();
+}
+
+// Tek üründe yeni fiyatı hesapla (tür + yuvarlama)
+function _pwSelNewPrice(old, oran, yuvarla) {
+  let np = (pwZamType === 'pct') ? old * (1 + oran / 100) : old + oran;
+  np = _roundZam(np, yuvarla);
+  return np < 0 ? 0 : np;
+}
+
+// "Seçili ürünler" sekmesi — bilgi + önizleme + buton durumunu canlı güncelle
+function pwRenderSelPreview() {
+  const cont = document.getElementById('pwSelPreview');
+  const info = document.getElementById('pwSelInfo');
+  const btn = document.getElementById('pwSelApplyBtn');
+  if (!cont) return;
+  const sel = products.filter(p => selectedBarcodes.has(p.b));
+
+  if (sel.length === 0) {
+    if (info) info.textContent = '⚠ Önce listeden ürün işaretle';
+    cont.innerHTML = `<div style="padding:14px;color:var(--muted);line-height:1.6">Önce <b>ÜRÜNLER</b> listesinden zam yapmak istediğin ürünleri işaretle (satırların solundaki kutucuk ya da üstteki <b>"Görünen ürünlerin hepsini seç"</b>). Sonra buraya dön.</div>`;
+    if (btn) { btn.disabled = true; btn.style.opacity = '.5'; btn.style.cursor = 'not-allowed'; btn.textContent = 'Önce ürün işaretle'; }
+    return;
+  }
+
+  if (info) info.textContent = 'Listeden işaretlediğin ' + sel.length + ' ürüne zam uygulanacak';
+  const oran = parsePrice(document.getElementById('pwSelOran')?.value || '');
+  const yuvarla = document.getElementById('pwSelYuvarla')?.value || 'none';
+  const rows = sel.slice(0, 60).map(p => {
+    const np = oran ? _pwSelNewPrice(p.p, oran, yuvarla) : p.p;
+    return `<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 4px;border-bottom:1px solid var(--border)">
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(p.n)}</span>
+      <span style="white-space:nowrap;color:var(--muted)">${fmt(p.p)} → <b style="color:var(--green)">${fmt(np)}</b></span>
+    </div>`;
+  }).join('');
+  cont.innerHTML = rows + (sel.length > 60 ? `<div style="padding:6px 4px;color:var(--muted)">… ve ${sel.length - 60} ürün daha</div>` : '');
+
+  if (btn) {
+    if (!oran || oran === 0) {
+      btn.disabled = true; btn.style.opacity = '.5'; btn.style.cursor = 'not-allowed';
+      btn.textContent = (pwZamType === 'pct') ? 'Oran gir (%)' : 'Tutar gir (₺)';
+    } else {
+      btn.disabled = false; btn.style.opacity = '1'; btn.style.cursor = 'pointer';
+      btn.textContent = sel.length + ' ürüne zammı uygula';
+    }
+  }
+}
+
+// "Seçili ürünler" sekmesi — zammı uygula (yedek + onay + normal save)
+function applySelectedZam() {
+  const sel = products.filter(p => selectedBarcodes.has(p.b));
+  if (sel.length === 0) { appAlert('Önce listeden ürün işaretle.'); return; }
+  const oran = parsePrice(document.getElementById('pwSelOran')?.value || '');
+  if (!oran || oran === 0) { appAlert('Geçerli bir ' + (pwZamType === 'pct' ? 'oran' : 'tutar') + ' gir (örn: 15).'); return; }
+  const yuvarla = document.getElementById('pwSelYuvarla')?.value || 'none';
+  const isPct = (pwZamType === 'pct');
+  const changes = sel.map(p => ({ p, old: p.p, new: _pwSelNewPrice(p.p, oran, yuvarla) }));
+  const label = isPct ? ('%' + oran) : ('+' + fmt(oran));
+
+  appConfirm({
+    title: '📈 Zam onayı',
+    bodyHtml: escHtml('SON ONAY: ' + sel.length + ' seçili ürünün fiyatı değişecek (' + label + ').\n\n🛡️ Uygulamadan önce otomatik yedek alınacak.\n\nUygulansın mı?'),
+    okText: 'Zammı uygula', cancelText: 'Vazgeç',
+    onOk: function(){
+      makeBackup('Seçili ürünlere zam (' + label + ' — ' + sel.length + ' ürün)');
+      changes.forEach(c => { c.p.p = c.new; });
+      _originalSave();
+      renderProds(); renderQuick();
+      document.getElementById('priceWizOverlay')?.remove();
+      flash('✓ ' + sel.length + ' seçili ürüne zam uygulandı (' + label + ', yedek alındı)', true);
+      _focusProdSearch();
+    }
+  });
 }
 
 // Yüzde zam uygula (önizleme + iki onay + otomatik yedek)
@@ -4238,12 +4396,7 @@ function applyPercentageZam() {
 
   // Yeni fiyatları hesapla — henüz uygulama
   const changes = targets.map(p => {
-    let newPrice = p.p * (1 + yuzde / 100);
-    if (yuvarla === '0.5') newPrice = Math.round(newPrice * 2) / 2;
-    else if (yuvarla === '1') newPrice = Math.round(newPrice);
-    else if (yuvarla === '5') newPrice = Math.round(newPrice / 5) * 5;
-    else newPrice = Math.round(newPrice * 100) / 100;
-    return { p: p, old: p.p, new: newPrice };
+    return { p: p, old: p.p, new: _roundZam(p.p * (1 + yuzde / 100), yuvarla) };
   });
 
   // Önizleme — ilk 10

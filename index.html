@@ -374,6 +374,9 @@ input::placeholder { color: var(--soft); }
     </div>
   </div>
   <div style="display:flex;gap:8px;align-items:center">
+    <button id="rescueBtn" onclick="rescueFocus()" title="İmleç kayboldu / kutu pasifleştiyse tıkla" style="padding:6px 10px;border-radius:8px;border:1.5px solid var(--accent);background:var(--accent-light);color:var(--accent);font-weight:800;font-size:14px;cursor:pointer;line-height:1;display:flex;align-items:center;gap:5px">
+      🔄 <span style="font-size:11px;letter-spacing:.5px">YENİLE</span>
+    </button>
     <button id="statsToggle" onclick="toggleStats()" title="Günlük satış / ciro göster (30 sn sonra kapanır)" style="padding:6px 10px;border-radius:8px;border:1.5px solid var(--border);background:var(--card);color:var(--muted);font-weight:800;font-size:14px;cursor:pointer;line-height:1;display:flex;align-items:center;gap:5px">
       <span id="statsToggleIcon">👁</span><span id="statsToggleLbl" style="font-size:11px;letter-spacing:.5px">GÖSTER</span>
     </button>
@@ -477,7 +480,7 @@ input::placeholder { color: var(--soft); }
   <!-- ══ PRODUCTS ══ -->
   <div id="sec-products" class="section" style="overflow:hidden">
     <div class="prod-toolbar">
-      <input class="prod-search" placeholder="🔍 Ürün ara..." oninput="renderProds()" id="prodSearch">
+      <input class="prod-search" placeholder="🔍 Ürün ara..." id="prodSearch">
       <button onclick="toggleQuickAdd()" style="padding:10px 14px;border-radius:8px;border:none;background:linear-gradient(135deg,#0E8050,#14A060);color:#fff;font-weight:800;font-size:13px" title="Barkod okut → ad/fiyat yaz → Enter → sonraki ürün">⚡ Hızlı Ekle</button>
       <button onclick="openPriceUpdateWizard()" style="padding:10px 14px;border-radius:8px;border:none;background:linear-gradient(135deg,#D4AC0D,#F1C40F);color:#2C1810;font-weight:900;font-size:13px;box-shadow:0 2px 8px rgba(212,172,13,.35)" title="Zam geldiğinde veya toplu fiyat değişikliği için">💰 Zam / Fiyat Güncelle</button>
       <button onclick="openBackupManager()" style="padding:10px 14px;border-radius:8px;border:none;background:linear-gradient(135deg,var(--accent),var(--accent3));color:#fff;font-weight:700;font-size:13px" title="Yanlış yaptığında eski hâline dönmek için otomatik yedekleri görüntüle">💾 Geri Al</button>
@@ -1203,6 +1206,12 @@ function parsePrice(str) {
 (function prodSearchScanAccumulate(){
   const el = document.getElementById('prodSearch');
   if (!el) return;
+  // DEBOUNCE: 120ms — 788 ürün her tuşta yeniden render edilmesin
+  let _renderDeb = null;
+  el.addEventListener('input', function(){
+    if (_renderDeb) clearTimeout(_renderDeb);
+    _renderDeb = setTimeout(() => { try { renderProds(); } catch(e){} }, 120);
+  }, false);
   const isBarcode = (v) => /^\d{6,}$/.test((v || '').trim());      // okutulan kod (rakamsal)
   const hasLetters = (v) => /[^\d\s]/.test(v || '');               // rakam-dışı = metin araması
   let timer = null;
@@ -1234,7 +1243,24 @@ function parsePrice(str) {
   });
   // Okuyucu sonunda Enter gönderir → hemen kesinleştir (her okutma ayrı birikir).
   el.addEventListener('keydown', function(e){
-    if (e.key === 'Enter') { e.preventDefault(); commitScan(); }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const v = (el.value || '').trim();
+      if (isBarcode(v)) {
+        let p = products.find(x => x.b === v);
+        if (!p) {
+          const vn = (typeof _normBarcode === 'function') ? _normBarcode(v) : v;
+          p = products.find(x => ((typeof _normBarcode === 'function') ? _normBarcode(x.b) : x.b) === vn);
+        }
+        if (p) {
+          scannedList = scannedList.filter(b => b !== p.b);
+          scannedList.unshift(p.b);
+          try { renderProds(); } catch (err) {}
+        }
+      }
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(commitScan, 5000);
+    }
   }, false);
 })();
 
@@ -2439,6 +2465,48 @@ function focusBarcode() {
     if (document.activeElement !== inp) inp.focus();
   }, 20);
 }
+// 🔄 KURTARMA: İmleç kayboldu / kutu pasifleşti — state'i sıfırla
+function rescueFocus() {
+  // Ghost overlay tespiti — boş kalan overlay varsa kaldır
+  document.querySelectorAll('.modal-overlay.show').forEach(o => {
+    if (o.id === 'appConfirmOverlay') return;       // app confirm açıksa dokunma
+    if (!o.querySelector('button')) o.remove();     // butonsuz hayalet → kaldır
+  });
+  // Aktif sekmeye göre doğru kutuya odak ver
+  const saleActive = document.getElementById('sec-sale')?.classList.contains('active');
+  const prodsActive = document.getElementById('sec-products')?.classList.contains('active');
+  if (saleActive) {
+    const inp = document.getElementById('barcodeInput');
+    if (inp) { inp.value = ''; try { inp.focus(); } catch(e){} }
+  } else if (prodsActive) {
+    try { _focusProdSearch(); } catch(e){}
+  }
+  try { flash('✓ İmleç tazelendi', true); } catch(e){}
+}
+// 👁 ODAK BEKÇİSİ: odak boşluğa düşmüşse sessizce kurtar (kullanıcı fark etmez)
+setInterval(function(){
+  const a = document.activeElement;
+  // Bir editable odaktaysa karışma (yazı bozmaz)
+  if (a && a !== document.body) {
+    const tag = a.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || a.isContentEditable) return;
+  }
+  // Modal/overlay açıksa karışma
+  if (document.querySelector('.modal-overlay.show, .price-overlay.show, #editModal:not(.hidden)')) return;
+  const saleActive = document.getElementById('sec-sale')?.classList.contains('active');
+  const prodsActive = document.getElementById('sec-products')?.classList.contains('active');
+  if (saleActive) {
+    const inp = document.getElementById('barcodeInput');
+    if (inp && inp.offsetParent !== null && document.activeElement !== inp) {
+      try { inp.focus(); } catch(e){}
+    }
+  } else if (prodsActive) {
+    const ps = document.getElementById('prodSearch');
+    if (ps && ps.offsetParent !== null && document.activeElement !== ps) {
+      try { ps.focus(); } catch(e){}
+    }
+  }
+}, 1500);
 // NOT: Sürekli yoklama (setInterval) KALDIRILDI — odak artık sadece gerçek
 // olaylarda barkoda verilir (satış sekmesi açılınca, modal kapanınca, satış
 // tamamlanınca, sepete ürün eklenince, pencere odak kazanınca).
@@ -2483,7 +2551,24 @@ document.addEventListener('keydown', function(e){
   if (e.ctrlKey || e.altKey || e.metaKey) return;
   if (e.key.length > 1 && e.key !== 'Enter' && e.key !== 'Backspace') return;
   const inp = _barcodeFocusTarget();        // KURAL 2 + 3
-  if (!inp) return;
+  if (!inp) {
+    // ÜRÜNLER ekranında prodSearch'e fallback (kutu pasif kalmasın)
+    const productsTab = document.getElementById('sec-products');
+    if (productsTab && productsTab.classList.contains('active')) {
+      const ps = document.getElementById('prodSearch');
+      const overlayOpen = document.querySelector('.modal-overlay.show, #editModal:not(.hidden)');
+      if (ps && ps.offsetParent !== null && !overlayOpen
+          && document.activeElement !== ps && !_isEditableFocused(ps)) {
+        ps.focus();
+        if (e.key.length === 1) {
+          ps.value += e.key;
+          ps.dispatchEvent(new Event('input', { bubbles: true }));
+          e.preventDefault();
+        }
+      }
+    }
+    return;
+  }
   if (document.activeElement === inp) return;  // zaten barkod kutusunda
   if (_isEditableFocused(inp)) return;         // KURAL 1 — başka yazı alanına yazılıyor
   inp.focus();
@@ -2836,7 +2921,10 @@ function openEditByIdx(idx){
   }
   document.getElementById('editModal').classList.remove('hidden');
 }
-function closeEdit() { document.getElementById('editModal').classList.add('hidden'); }
+function closeEdit() {
+  document.getElementById('editModal').classList.add('hidden');
+  try { _focusProdSearch(); } catch(e){}
+}
 function saveEdit() {
   const idx = parseInt(document.getElementById('editBarcode').value);
   const p = products[idx];

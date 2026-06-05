@@ -2635,6 +2635,15 @@ function clearScannedView() {
   if (el) { try { el.focus(); } catch (e) {} }
 }
 
+// Biriken "okutulanlar" listesinden TEK ürünü ÇIKAR (görünümden). Ürün
+// veritabanında/stokta KALIR — burada asla silme yapılmaz. (Normal ürün
+// listesindeki ✕ silmeye devam eder; o delProdByIdx ile yönetilir.)
+function removeFromScannedView(barcode) {
+  scannedList = scannedList.filter(b => b !== barcode);
+  renderProds();
+  flash('Listeden çıkarıldı', true);
+}
+
 function renderProdCatBar() {
   const bar = document.getElementById('prodCatBar');
   if (!bar) return;
@@ -2729,6 +2738,7 @@ function renderProds() {
       : list.length + ' ürün • ' + prodCatFilter + ' kategorisi' + (q ? ' • arama aktif' : '');
     countEl.textContent = totalText;
   }
+  const isScanned = vis.mode === 'scanned';
   document.getElementById('prodList').innerHTML = list.map((p, listIdx) => {
     const idx = products.indexOf(p);
     const nameSafe = escHtml(p.n);
@@ -2736,6 +2746,12 @@ function renderProds() {
     const cSafe = escHtml(p.c||'');
     const kdv = p.k != null ? p.k : suggestKdvForCat(p.c);
     const isSelected = selectedBarcodes.has(p.b);
+    // Biriken "okutulanlar" görünümünde son buton ürünü SİLMEZ; yalnızca bu
+    // ürünü listeden çıkarır (ürün veritabanında kalır). Normal görünümde
+    // ✕ eskisi gibi siler.
+    const lastBtn = isScanned
+      ? `<button class="small-btn" onclick="removeFromScannedView('${bSafe}')" title="Listeden çıkar (ürün silinmez)">−</button>`
+      : `<button class="small-btn del-prod-btn" onclick="delProdByIdx(${idx})" title="Ürünü sil">✕</button>`;
     return `
     <div class="prod-row ${isSelected?'selected':''}" data-barcode="${bSafe}" data-listidx="${listIdx}">
       <input type="checkbox" class="prod-check" ${isSelected?'checked':''} onclick="toggleRowSelect(event, '${bSafe}', ${listIdx})">
@@ -2746,7 +2762,7 @@ function renderProds() {
       <div class="prod-stock ${p.s<=5?'stock-low':'stock-ok'}">${p.s}</div>
       <div class="prod-price">${fmt(p.p)}</div>
       <button class="small-btn edit-btn" onclick="openEditByIdx(${idx})">✎</button>
-      <button class="small-btn del-prod-btn" onclick="delProdByIdx(${idx})">✕</button>
+      ${lastBtn}
     </div>`;
   }).join('');
   updateBulkBar();

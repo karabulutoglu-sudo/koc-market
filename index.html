@@ -285,9 +285,36 @@ input::placeholder { color: var(--soft); }
 .receipt-change { font-weight: 700; color: var(--green); font-size: 14px; }
 
 /* Products page */
-.prod-toolbar { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; padding: 12px 16px 0; }
-.prod-search { flex: 1; min-width: 120px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); outline: none; font-size: 14px; }
+/* ── v3: Gruplanmış, dokunmatik dostu araç çubuğu (çizgi ikonlar) ── */
+.prod-toolbar { display: flex; gap: 0; margin-bottom: 10px; flex-wrap: wrap; align-items: flex-end; padding: 12px 16px 4px; row-gap: 10px; }
+.tb-group { display: flex; flex-direction: column; gap: 6px; padding: 0 14px; }
+.tb-group + .tb-group { border-left: 1px solid var(--border); }
+.tb-group:first-child { padding-left: 0; }
+.tb-group:last-child { padding-right: 0; }
+.tb-label { font-size: 10.5px; font-weight: 800; letter-spacing: .7px; text-transform: uppercase; color: var(--muted); padding-left: 3px; }
+.tb-row { display: flex; gap: 8px; align-items: center; }
+.tb-search { flex: 1 1 240px; min-width: 180px; }
+.tb-search-wrap { position: relative; display: flex; align-items: center; }
+.tb-search-wrap > svg { position: absolute; left: 13px; width: 18px; height: 18px; color: var(--muted); pointer-events: none; }
+.tb-search-wrap .prod-search { width: 100%; padding-left: 40px; min-height: 46px; }
+.prod-search { flex: 1; min-width: 120px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border); background: var(--card); color: var(--text); outline: none; font-size: 15px; }
 .prod-search:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-light);}
+/* Dokunmatik buton temeli */
+.tb-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 46px; padding: 0 16px; border-radius: 10px; border: 1px solid transparent; font-family: inherit; font-weight: 800; font-size: 14px; line-height: 1; cursor: pointer; white-space: nowrap; transition: filter .12s, background .12s, border-color .12s; }
+.tb-btn > svg { width: 20px; height: 20px; flex: 0 0 auto; }
+.tb-btn:active { transform: translateY(1px); }
+/* İşlemler — dolu renkli */
+.tb-btn--green { background: linear-gradient(135deg,#0E8050,#14A060); color: #fff; }
+.tb-btn--green:hover { filter: brightness(1.05); }
+.tb-btn--amber { background: linear-gradient(135deg,#D4AC0D,#F1C40F); color: #2C1810; box-shadow: 0 2px 8px rgba(212,172,13,.30); }
+.tb-btn--amber:hover { filter: brightness(1.03); }
+/* Yedek — beyaz/çerçeveli, ikon renkli */
+.tb-btn--ghost { background: var(--card); border: 1px solid var(--border); color: var(--text); font-weight: 700; }
+.tb-btn--ghost:hover { border-color: var(--accent); }
+.tb-btn--ghost > svg { color: var(--ico, var(--accent)); }
+/* Sistem — sade ikon butonu */
+.tb-btn--icon { min-width: 46px; padding: 0 12px; background: var(--card); border: 1px solid var(--border); color: var(--muted); }
+.tb-btn--icon:hover { border-color: var(--accent); color: var(--accent); }
 /* Ürün sekmesi kategori filtresi (Tümü, Atıştırmalık, Sigara, vb.) */
 .prod-cat-bar { display: flex; gap: 6px; flex-wrap: wrap; padding: 4px 16px 8px; align-items: center; }
 .prod-cat-btn { padding: 7px 14px; border-radius: 18px; border: 1.5px solid var(--border); background: var(--card); color: var(--muted); font-weight: 700; font-size: 13px; cursor: pointer; transition: all .15s; white-space: nowrap; }
@@ -526,13 +553,59 @@ input::placeholder { color: var(--soft); }
   <!-- ══ PRODUCTS ══ -->
   <div id="sec-products" class="section" style="overflow:hidden">
     <div class="prod-toolbar">
-      <input class="prod-search" placeholder="🔍 Ürün ara..." id="prodSearch">
-      <button onclick="toggleQuickAdd()" style="padding:10px 14px;border-radius:8px;border:none;background:linear-gradient(135deg,#0E8050,#14A060);color:#fff;font-weight:800;font-size:13px" title="Barkod okut → ad/fiyat yaz → Enter → sonraki ürün">⚡ Hızlı Ekle</button>
-      <button onclick="openPriceUpdateWizard()" style="padding:10px 14px;border-radius:8px;border:none;background:linear-gradient(135deg,#D4AC0D,#F1C40F);color:#2C1810;font-weight:900;font-size:13px;box-shadow:0 2px 8px rgba(212,172,13,.35)" title="Zam geldiğinde veya toplu fiyat değişikliği için">💰 Zam / Fiyat Güncelle</button>
-      <button onclick="openBackupManager()" style="padding:10px 14px;border-radius:8px;border:none;background:linear-gradient(135deg,var(--accent),var(--accent3));color:#fff;font-weight:700;font-size:13px" title="Yanlış yaptığında eski hâline dönmek için otomatik yedekleri görüntüle">💾 Geri Al</button>
-      <button onclick="exportProductsJson()" style="padding:10px 14px;border-radius:8px;border:none;background:#2E8B57;color:#fff;font-weight:700;font-size:13px" title="Tüm ürün listeni bilgisayara indir (gerçek yedek)">⬇ Dosyaya Kaydet</button>
-      <button onclick="importProductsJson()" style="padding:10px 14px;border-radius:8px;border:none;background:#6C3483;color:#fff;font-weight:700;font-size:13px" title="Kaydettiğin yedek dosyasını geri yükle">⬆ Dosyadan Getir</button>
-      <button onclick="openHelpModal()" style="padding:10px 12px;border-radius:8px;border:2px solid var(--accent);background:transparent;color:var(--accent);font-weight:800;font-size:13px" title="Bu butonların ne işe yaradığını öğren">ℹ️ Yardım</button>
+      <!-- ── Ara ── -->
+      <div class="tb-group tb-search">
+        <div class="tb-label">Ara</div>
+        <div class="tb-search-wrap">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input class="prod-search" placeholder="Ürün ara..." id="prodSearch">
+        </div>
+      </div>
+
+      <!-- ── İşlemler ── -->
+      <div class="tb-group">
+        <div class="tb-label">İşlemler</div>
+        <div class="tb-row">
+          <button class="tb-btn tb-btn--green" onclick="toggleQuickAdd()" title="Barkod okut → ad/fiyat yaz → Enter → sonraki ürün">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            Hızlı Ekle
+          </button>
+          <button class="tb-btn tb-btn--amber" onclick="openPriceUpdateWizard()" title="Zam geldiğinde veya toplu fiyat değişikliği için">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 17 9 11 13 15 21 7"/><polyline points="15 7 21 7 21 13"/></svg>
+            Zam / Fiyat
+          </button>
+        </div>
+      </div>
+
+      <!-- ── Yedek ── -->
+      <div class="tb-group">
+        <div class="tb-label">Yedek</div>
+        <div class="tb-row">
+          <button class="tb-btn tb-btn--ghost" style="--ico:#0E7C86" onclick="openBackupManager()" title="Yanlış yaptığında eski hâline dönmek için otomatik yedekleri görüntüle">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+            Geri Al
+          </button>
+          <button class="tb-btn tb-btn--ghost" style="--ico:#0E8050" onclick="exportProductsJson()" title="Tüm ürün listeni bilgisayara indir (gerçek yedek)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Kaydet
+          </button>
+          <button class="tb-btn tb-btn--ghost" style="--ico:#6C3483" onclick="importProductsJson()" title="Kaydettiğin yedek dosyasını geri yükle">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Getir
+          </button>
+        </div>
+      </div>
+
+      <!-- ── Sistem ── -->
+      <div class="tb-group">
+        <div class="tb-label">Sistem</div>
+        <div class="tb-row">
+          <!-- Kilit (PIN) butonu için yer ayrıldı — ayrı adımda eklenecek -->
+          <button class="tb-btn tb-btn--icon" onclick="openHelpModal()" title="Yardım — bu butonların ne işe yaradığını öğren" aria-label="Yardım">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          </button>
+        </div>
+      </div>
     </div>
     <div id="addFormArea" class="hidden"></div>
     <div class="prod-cat-bar" id="prodCatBar"></div>
@@ -5008,22 +5081,35 @@ function openHelpModal() {
   overlay.className = 'modal-overlay show';
   overlay.id = 'helpOverlay';
   overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+  // Araç çubuğuyla aynı çizgi ikonlar (emoji yerine)
+  const ic = (name, color, size = 18) => {
+    const p = {
+      help: '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+      bolt: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
+      trend: '<polyline points="3 17 9 11 13 15 21 7"/><polyline points="15 7 21 7 21 13"/>',
+      undo: '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
+      download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+      upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
+      warn: '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'
+    };
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px;flex:0 0 auto">${p[name]}</svg>`;
+  };
   overlay.innerHTML = `
     <div style="background:var(--card);border-radius:14px;padding:22px;max-width:720px;width:100%;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.4)">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border)">
-        <div style="font-size:20px;font-weight:900;color:var(--accent)">ℹ️ Butonlar Ne İşe Yarar?</div>
+        <div style="font-size:20px;font-weight:900;color:var(--accent);display:flex;align-items:center;gap:9px">${ic('help','var(--accent)',22)} Butonlar Ne İşe Yarar?</div>
         <button onclick="document.getElementById('helpOverlay').remove()" style="background:none;border:none;color:var(--muted);font-size:28px;cursor:pointer;line-height:1">×</button>
       </div>
       <div style="overflow-y:auto;flex:1;line-height:1.7;font-size:14px;color:var(--text)">
 
         <div style="background:rgba(14,128,80,.1);border-left:4px solid #0E8050;padding:14px 16px;border-radius:8px;margin-bottom:14px">
-          <div style="font-weight:900;color:#0E8050;font-size:16px;margin-bottom:6px">⚡ Hızlı Ekle</div>
+          <div style="font-weight:900;color:#0E8050;font-size:16px;margin-bottom:6px;display:flex;align-items:center;gap:8px">${ic('bolt','#0E8050')} Hızlı Ekle</div>
           <b>Ne yapar:</b> Yeni ürün ekleme formu açar — barkod okut, ad yaz, fiyat gir, Enter → sonraki.<br>
           <b>Ne zaman kullan:</b> Yeni gelen ürünleri sisteme işlerken. Seri şekilde 50-100 ürün yazmana izin verir.
         </div>
 
         <div style="background:rgba(212,172,13,.1);border-left:4px solid #D4AC0D;padding:14px 16px;border-radius:8px;margin-bottom:14px">
-          <div style="font-weight:900;color:#B8960A;font-size:16px;margin-bottom:6px">💰 Zam / Fiyat Güncelle</div>
+          <div style="font-weight:900;color:#B8960A;font-size:16px;margin-bottom:6px;display:flex;align-items:center;gap:8px">${ic('trend','#B8960A')} Zam / Fiyat Güncelle</div>
           <b>Ne yapar:</b> Tek noktadan 3 farklı yolla fiyat güncellemesi yapar.<br>
           <b>Ne zaman kullan:</b> Zam geldiğinde ya da birkaç ürünün fiyatını değiştirmen gerektiğinde.<br>
           <b>3 yöntem sunar:</b><br>
@@ -5033,14 +5119,14 @@ function openHelpModal() {
         </div>
 
         <div style="background:rgba(14,124,134,.1);border-left:4px solid var(--accent);padding:14px 16px;border-radius:8px;margin-bottom:14px">
-          <div style="font-weight:900;color:var(--accent);font-size:16px;margin-bottom:6px">💾 Geri Al</div>
+          <div style="font-weight:900;color:var(--accent);font-size:16px;margin-bottom:6px;display:flex;align-items:center;gap:8px">${ic('undo','var(--accent)')} Geri Al</div>
           <b>Ne yapar:</b> Program arka planda otomatik yedek alıyor (her değişiklikte). Bu buton o yedekleri gösterir.<br>
           <b>Ne zaman kullan:</b> Yanlış bir şey yaptığında. Mesela 20 ürünü yanlışlıkla sildin → bu butona bas → silmeden önceki tarihe "GERİ YÜKLE" de → ürünler geri gelir.<br>
-          <b>Not:</b> Son 30 yedek saklanır. Çok eski değişiklikler için 👇 Dosyaya Kaydet'i kullan.
+          <b>Not:</b> Son 30 yedek saklanır. Çok eski değişiklikler için ${ic('download','#2E8B57',15)} Dosyaya Kaydet'i kullan.
         </div>
 
         <div style="background:rgba(46,139,87,.1);border-left:4px solid #2E8B57;padding:14px 16px;border-radius:8px;margin-bottom:14px">
-          <div style="font-weight:900;color:#2E8B57;font-size:16px;margin-bottom:6px">⬇ Dosyaya Kaydet</div>
+          <div style="font-weight:900;color:#2E8B57;font-size:16px;margin-bottom:6px;display:flex;align-items:center;gap:8px">${ic('download','#2E8B57')} Dosyaya Kaydet</div>
           <b>Ne yapar:</b> Tüm ürün listeni bilgisayarına bir dosya olarak indirir.<br>
           <b>İki seçenek sunar:</b><br>
           &nbsp;&nbsp;• <b>JSON</b> — tam yedek. Tarayıcı çökse, bilgisayar bozulsa bile USB'de/Drive'da saklarsın, her şey döner.<br>
@@ -5051,7 +5137,7 @@ function openHelpModal() {
         </div>
 
         <div style="background:rgba(108,52,131,.1);border-left:4px solid #6C3483;padding:14px 16px;border-radius:8px;margin-bottom:14px">
-          <div style="font-weight:900;color:#6C3483;font-size:16px;margin-bottom:6px">⬆ Dosyadan Getir</div>
+          <div style="font-weight:900;color:#6C3483;font-size:16px;margin-bottom:6px;display:flex;align-items:center;gap:8px">${ic('upload','#6C3483')} Dosyadan Getir</div>
           <b>Ne yapar:</b> Bilgisayarındaki JSON veya CSV dosyasını yükler.<br>
           <b>Akıllıdır:</b> Aynı barkoda sahip ürünlerin bilgilerini güncelleyebilir (fiyat, stok, kategori), yeni barkodları ekler, eskiler silinmez.<br>
           <b>Ne zaman kullan:</b><br>
@@ -5061,27 +5147,27 @@ function openHelpModal() {
         </div>
 
         <div style="background:rgba(230,126,34,.1);border-left:4px solid #E67E22;padding:14px 16px;border-radius:8px;margin-bottom:14px">
-          <div style="font-weight:900;color:#C77016;font-size:16px;margin-bottom:10px">💰 ZAM / FİYAT GÜNCELLEMESİ — ADIM ADIM</div>
+          <div style="font-weight:900;color:#C77016;font-size:16px;margin-bottom:10px;display:flex;align-items:center;gap:8px">${ic('trend','#C77016')} ZAM / FİYAT GÜNCELLEMESİ — ADIM ADIM</div>
           <b style="color:var(--accent)">Senaryo:</b> Ülker'den zam geldi, 30 ürünün fiyatı değişti. Hepsini tek tek değiştirmek yerine Excel'den toplu yapalım.<br><br>
           <b style="color:var(--accent)">1. Önce dışa aktar:</b><br>
-          &nbsp;&nbsp;<b>⬇ Dosyaya Kaydet</b> → "2" (CSV/Excel) seç → dosya inecek (koc-urunler-XXXX.csv)<br><br>
+          &nbsp;&nbsp;<b>${ic('download','#2E8B57',15)} Dosyaya Kaydet</b> → "2" (CSV/Excel) seç → dosya inecek (koc-urunler-XXXX.csv)<br><br>
           <b style="color:var(--accent)">2. Excel'de aç ve değiştir:</b><br>
           &nbsp;&nbsp;• Dosyaya çift tıkla, Excel otomatik açılır<br>
           &nbsp;&nbsp;• "FIYAT" kolonunda değişen ürünlerin fiyatlarını yaz<br>
           &nbsp;&nbsp;• Sadece değiştireceklerini değiştir, diğerlerine dokunma<br>
           &nbsp;&nbsp;• <b>Excel sorarsa "CSV formatında kaydet" de, DEĞİŞTİRME!</b> (xlsx yaparsan buradan yükleyemezsin)<br><br>
           <b style="color:var(--accent)">3. Geri yükle:</b><br>
-          &nbsp;&nbsp;<b>⬆ Dosyadan Getir</b> → dosyayı seç → önizleme gelir (kaç fiyat değişti gösterir)<br>
-          &nbsp;&nbsp;Onayla → güncellenir. Önceki hal otomatik yedekte durur, yanlış olursa 💾 Geri Al'dan dönersin.
+          &nbsp;&nbsp;<b>${ic('upload','#6C3483',15)} Dosyadan Getir</b> → dosyayı seç → önizleme gelir (kaç fiyat değişti gösterir)<br>
+          &nbsp;&nbsp;Onayla → güncellenir. Önceki hal otomatik yedekte durur, yanlış olursa ${ic('undo','var(--accent)',15)} Geri Al'dan dönersin.
         </div>
 
         <div style="background:rgba(192,57,43,.08);border-left:4px solid var(--red);padding:14px 16px;border-radius:8px">
-          <div style="font-weight:900;color:var(--red);font-size:15px;margin-bottom:6px">⚠️ Önemli uyarılar</div>
+          <div style="font-weight:900;color:var(--red);font-size:15px;margin-bottom:6px;display:flex;align-items:center;gap:8px">${ic('warn','var(--red)',17)} Önemli uyarılar</div>
           • Excel'de dosyayı açtığında SÜTUNLAR tek sütuna yapışık gözükürse sorun var. Doğru açılınca barkod, ad, fiyat ayrı sütunlardadır.<br>
           • Excel dosyayı "XLSX" olarak kaydettirmeye çalışabilir — <b>"CSV (Virgülle ayrılmış)" olarak kaydet</b>, yoksa buradan geri yükleyemezsin.<br>
           • BARKOD kolonu <b>mutlaka değişmemeli</b> — barkod ürünün kimliği. Barkodu değiştirirsen program yeni ürün olarak ekler, eski kalır.<br>
           • Fiyatları Türkçe yaz: virgüllü (25,50). Excel zaten böyle kaydeder.<br>
-          • Şüphen varsa, güncellemeden önce bir kez daha <b>⬇ Dosyaya Kaydet → 1 (JSON)</b> ile yedek al.
+          • Şüphen varsa, güncellemeden önce bir kez daha <b>${ic('download','#2E8B57',15)} Dosyaya Kaydet → 1 (JSON)</b> ile yedek al.
         </div>
 
       </div>

@@ -665,11 +665,39 @@ input::placeholder { color: var(--soft); }
       <div id="miscGridNote" class="misc-note">Karta dokun → doğrudan sepete eklenir</div>
       <div id="miscGrid" class="misc-grid"></div>
       <div class="misc-grid-footer">
-        <button class="misc-free-btn" onclick="showMiscForm('free')">🧮 Serbest Tutar — fiyatı elle gir</button>
+        <button class="misc-free-btn" onclick="showMiscFree()">🧮 Serbest Tutar — fiyatı elle gir</button>
       </div>
     </div>
 
-    <!-- ───── EKLE / DÜZENLE FORMU (Yönet akışı) ───── -->
+    <!-- ───── SERBEST TUTAR (tek seferlik hızlı satış — KAYDEDİLMEZ) ───── -->
+    <div id="miscFreePane" style="display:none">
+      <div class="misc-form-head">
+        <button class="misc-back-btn" onclick="showMiscGrid()">‹ Geri</button>
+        <div class="modal-title" style="flex:1">🧮 Serbest Tutar (tek seferlik)</div>
+        <button class="misc-x" onclick="closeMisc()" title="Kapat">✕</button>
+      </div>
+      <div class="misc-note" style="margin-bottom:12px">Tek seferlik satış — ürün listesine kaydedilmez</div>
+      <div style="display:flex;gap:10px">
+        <div class="misc-field" style="flex:2">
+          <label>Tutar (₺) <span style="color:var(--soft);font-weight:500">— KDV dahil</span></label>
+          <input type="text" inputmode="decimal" id="miscFreePrice" placeholder="0,00" onkeydown="if(event.key==='Enter')addMiscFree()">
+        </div>
+        <div class="misc-field" style="flex:1">
+          <label>Adet</label>
+          <input type="number" id="miscFreeQty" value="1" min="1" onkeydown="if(event.key==='Enter')addMiscFree()">
+        </div>
+      </div>
+      <div class="misc-field">
+        <label>Açıklama <span style="color:var(--soft);font-weight:500">— opsiyonel</span></label>
+        <input type="text" id="miscFreeDesc" placeholder="Barkodsuz satış" onkeydown="if(event.key==='Enter')addMiscFree()">
+      </div>
+      <div style="display:flex;gap:10px">
+        <button onclick="showMiscGrid()" style="flex:1;padding:13px;border-radius:10px;border:1px solid var(--border);background:var(--card-dark);color:var(--muted);font-weight:700;cursor:pointer">İPTAL</button>
+        <button onclick="addMiscFree()" style="flex:2;padding:13px;border-radius:10px;border:none;background:linear-gradient(135deg,var(--accent),var(--accent3));color:#fff;font-weight:900;cursor:pointer">✓ SEPETE EKLE</button>
+      </div>
+    </div>
+
+    <!-- ───── EKLE / DÜZENLE FORMU (Yeni ürün / Yönet akışı) ───── -->
     <div id="miscFormPane" style="display:none">
       <div class="misc-form-head">
         <button class="misc-back-btn" onclick="showMiscGrid()">‹ Geri</button>
@@ -2282,8 +2310,21 @@ function openMisc() {
 function showMiscGrid() {
   miscEditingBarcode = null;
   document.getElementById('miscFormPane').style.display = 'none';
+  document.getElementById('miscFreePane').style.display = 'none';
   document.getElementById('miscGridPane').style.display = 'block';
   renderMiscGrid();
+}
+
+// SERBEST TUTAR görünümü — tek seferlik hızlı satış (KDV/kaydet YOK, ürün KAYDEDİLMEZ)
+function showMiscFree() {
+  miscEditingBarcode = null;
+  document.getElementById('miscFreePrice').value = '';
+  document.getElementById('miscFreeDesc').value = '';
+  document.getElementById('miscFreeQty').value = qtyMultiplier > 1 ? qtyMultiplier : 1;
+  document.getElementById('miscGridPane').style.display = 'none';
+  document.getElementById('miscFormPane').style.display = 'none';
+  document.getElementById('miscFreePane').style.display = 'block';
+  setTimeout(() => document.getElementById('miscFreePrice').focus(), 60);
 }
 
 // Yönet modunu aç/kapat
@@ -2347,7 +2388,7 @@ function renderMiscGrid() {
   document.getElementById('miscGrid').innerHTML = html;
 }
 
-// FORM görünümünü aç — mode: 'new' (kayıtlı yeni ürün) | 'free' (serbest tutar)
+// FORM görünümünü aç — YENİ BARKODSUZ ÜRÜN (kalıcı tanım: Ad + Fiyat + KDV + kaydet)
 function showMiscForm(mode) {
   miscEditingBarcode = null;
   document.getElementById('miscName').value = '';
@@ -2358,18 +2399,11 @@ function showMiscForm(mode) {
   document.getElementById('miscEditBanner').style.display = 'none';
   document.getElementById('miscDelBtn').style.display = 'none';
   document.getElementById('miscSubmitBtn').textContent = '✓ SEPETE EKLE';
-  if (mode === 'free') {
-    // Serbest tutar: tek seferlik, kaydetme kapalı, öneri yok
-    document.getElementById('miscFormTitle').textContent = '🧮 Serbest Tutar';
-    document.getElementById('miscSave').checked = false;
-    document.getElementById('miscFormSuggest').style.display = 'none';
-    document.getElementById('miscFormSuggest').innerHTML = '';
-  } else {
-    // Yeni kayıtlı ürün: kaydet açık, hızlı öneriler görünür
-    document.getElementById('miscFormTitle').textContent = 'Yeni Barkodsuz Ürün';
-    document.getElementById('miscSave').checked = true;
-    renderMiscSuggest();
-  }
+  // Yeni kayıtlı ürün: kaydet açık, hızlı öneriler görünür
+  document.getElementById('miscFormTitle').textContent = 'Yeni Barkodsuz Ürün';
+  document.getElementById('miscSave').checked = true;
+  renderMiscSuggest();
+  document.getElementById('miscFreePane').style.display = 'none';
   document.getElementById('miscGridPane').style.display = 'none';
   document.getElementById('miscFormPane').style.display = 'block';
   setTimeout(() => document.getElementById('miscName').focus(), 60);
@@ -2457,6 +2491,7 @@ function editMisc(barcode) {
   document.getElementById('miscFormSuggest').style.display = 'none';
   document.getElementById('miscFormSuggest').innerHTML = '';
   // Form görünümüne geç
+  document.getElementById('miscFreePane').style.display = 'none';
   document.getElementById('miscGridPane').style.display = 'none';
   document.getElementById('miscFormPane').style.display = 'block';
   setTimeout(() => document.getElementById('miscPrice').focus(), 20);
@@ -2515,6 +2550,28 @@ function closeMisc() {
   miscEditingBarcode = null;
   document.getElementById('miscOverlay').classList.remove('show');
   focusBarcode();
+}
+
+// SERBEST TUTAR → doğrudan sepete (tek seferlik, ürün listesine KAYDEDİLMEZ)
+function addMiscFree() {
+  const price = parsePrice(document.getElementById('miscFreePrice').value);
+  const qty = parseInt(document.getElementById('miscFreeQty').value) || 1;
+  let desc = document.getElementById('miscFreeDesc').value.trim();
+  if (!price || price <= 0) {
+    flash('Geçerli bir tutar gir!', false);
+    document.getElementById('miscFreePrice').focus();
+    return;
+  }
+  if (!desc) desc = 'Barkodsuz satış';
+  // Benzersiz geçici barkod — products'a EKLENMEZ, sadece sepette yaşar
+  const barcode = 'MUH-' + Date.now();
+  cart.push({ b: barcode, n: desc, p: price, q: qty, k: 20 });
+  qtyMultiplier = 1;
+  showMultIndicator();
+  // Modal açık kalsın → ızgaraya dön, kasiyer devam edebilir
+  showMiscGrid();
+  renderCart();
+  flash((qty>1?qty+' × ':'') + desc + ' (' + fmt(price) + ') sepete eklendi', true);
 }
 
 function addMiscItem() {

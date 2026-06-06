@@ -315,6 +315,22 @@ input::placeholder { color: var(--soft); }
 /* Sistem — sade ikon butonu */
 .tb-btn--icon { min-width: 46px; padding: 0 12px; background: var(--card); border: 1px solid var(--border); color: var(--muted); }
 .tb-btn--icon:hover { border-color: var(--accent); color: var(--accent); }
+/* Kilit butonu — kilitliyken kırmızı tonlu, yönetici modunda yeşil */
+.tb-btn--lock { min-width: 46px; padding: 0 12px; gap: 6px; background: rgba(192,57,43,.08); border: 1px solid rgba(192,57,43,.45); color: var(--red); }
+.tb-btn--lock:hover { border-color: var(--red); }
+.tb-btn--lock.admin-on { background: rgba(14,128,80,.10); border-color: rgba(14,128,80,.5); color: var(--green); }
+.tb-btn--lock .lock-lbl { font-size: 12px; font-weight: 800; }
+.tb-btn--lock .lock-lbl:empty { display: none; }
+/* PIN giriş kutusu — dokunmatik numpad */
+.pin-card { text-align: center; }
+.pin-dots { display: flex; gap: 14px; justify-content: center; margin: 6px 0 16px; }
+.pin-dot { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--border); background: transparent; transition: all .12s; }
+.pin-dot.filled { background: var(--accent); border-color: var(--accent); }
+.pin-pad { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; }
+.pin-key { padding: 16px 0; border-radius: 12px; border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 22px; font-weight: 800; cursor: pointer; font-family: inherit; transition: background .1s; }
+.pin-key:active { background: var(--accent-light); }
+.pin-shake { animation: pinShake .35s; }
+@keyframes pinShake { 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-8px)} 40%,80%{transform:translateX(8px)} }
 /* Ürün sekmesi kategori filtresi (Tümü, Atıştırmalık, Sigara, vb.) */
 .prod-cat-bar { display: flex; gap: 6px; flex-wrap: wrap; padding: 4px 16px 8px; align-items: center; }
 .prod-cat-btn { padding: 7px 14px; border-radius: 18px; border: 1.5px solid var(--border); background: var(--card); color: var(--muted); font-weight: 700; font-size: 13px; cursor: pointer; transition: all .15s; white-space: nowrap; }
@@ -600,7 +616,9 @@ input::placeholder { color: var(--soft); }
       <div class="tb-group">
         <div class="tb-label">Sistem</div>
         <div class="tb-row">
-          <!-- Kilit (PIN) butonu için yer ayrıldı — ayrı adımda eklenecek -->
+          <button id="lockBtn" class="tb-btn tb-btn--lock" onclick="lockButtonClick()" aria-label="Kilit" title="Kilitli (Kasiyer modu)">
+            <span class="lock-ico"></span><span class="lock-lbl"></span>
+          </button>
           <button class="tb-btn tb-btn--icon" onclick="openHelpModal()" title="Yardım — bu butonların ne işe yaradığını öğren" aria-label="Yardım">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
           </button>
@@ -1757,6 +1775,181 @@ function appAlert(msgOrOpts){
   document.addEventListener('keydown', onKey, true);
   setTimeout(() => { const c = ov.querySelector('#appAlertOk'); if (c) c.focus(); }, 30);
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// ║  PIN KİLİDİ — Kasiyer / Yönetici ayrımı                             ║
+// ║  Sadece İKİ riskli işlem PIN ister: Zam/Fiyat ve ürün silme.        ║
+// ║  Doğru PIN → 5 dk yönetici modu. Diğer her şey (satış, barkod,      ║
+// ║  geçmiş, hızlı ekle, yedek...) serbest. Açılışta PIN sorulmaz.      ║
+// ║  PIN diskte saklanır (kocStore 'koc-admin-pin'). Varsayılan 1234.   ║
+// ══════════════════════════════════════════════════════════════════════
+const ADMIN_PIN_KEY = 'koc-admin-pin';
+const ADMIN_SESSION_MS = 5 * 60 * 1000;   // yönetici modu süresi: 5 dakika
+let _adminUntil = 0;                        // yönetici modunun bittiği an (ms)
+
+const LOCK_ICON_CLOSED = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
+const LOCK_ICON_OPEN   = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>';
+
+function getAdminPin(){
+  let pin = LS.getItem(ADMIN_PIN_KEY);
+  if (pin == null || !/^\d{4}$/.test(pin)) { pin = '1234'; try { LS.setItem(ADMIN_PIN_KEY, pin); } catch(e){} }
+  return pin;
+}
+function setAdminPin(pin){ try { LS.setItem(ADMIN_PIN_KEY, String(pin)); return true; } catch(e){ return false; } }
+function isAdmin(){ return Date.now() < _adminUntil; }
+function enterAdmin(){ _adminUntil = Date.now() + ADMIN_SESSION_MS; updateLockUI(); }
+function lockNow(){ _adminUntil = 0; updateLockUI(); }
+
+// Yönetici modu kalan süresi (M:SS) — kilit butonu etiketinde gösterilir
+function _adminRemainStr(){
+  const ms = _adminUntil - Date.now();
+  if (ms <= 0) return '';
+  const s = Math.ceil(ms / 1000);
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+
+// ── Dokunmatik numpad'li, BLOKLAMAYAN 4 haneli PIN giriş kutusu ──
+// opts: { title, subtitle, onComplete(pin, {close,shake}), onCancel, showChangeLink, onChange }
+function askPin(opts){
+  opts = opts || {};
+  const eski = document.getElementById('pinBoxOverlay');
+  if (eski) eski.remove();
+  const ov = document.createElement('div');
+  ov.id = 'pinBoxOverlay';
+  ov.className = 'modal-overlay show';
+  let entered = '';
+
+  const keysHtml = ['1','2','3','4','5','6','7','8','9','C','0','⌫']
+    .map(k => `<button class="pin-key" data-k="${k}">${k}</button>`).join('');
+
+  ov.innerHTML =
+    '<div class="modal-card pin-card" style="max-width:320px">' +
+      '<div class="modal-title" style="text-align:center">' + escHtml(opts.title || 'PIN gir') + '</div>' +
+      (opts.subtitle ? '<div style="text-align:center;font-size:13px;color:var(--muted);margin-bottom:10px">' + escHtml(opts.subtitle) + '</div>' : '') +
+      '<div class="pin-dots" id="pinDots"></div>' +
+      '<div class="pin-pad">' + keysHtml + '</div>' +
+      '<div style="display:flex;gap:10px;justify-content:space-between;align-items:center;margin-top:14px">' +
+        (opts.showChangeLink ? '<button id="pinChangeLink" style="background:none;border:none;color:var(--accent);font-weight:700;font-size:13px;cursor:pointer;text-decoration:underline">PIN değiştir</button>' : '<span></span>') +
+        '<button id="pinCancel" style="padding:10px 18px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font-weight:800;font-size:14px;cursor:pointer">Vazgeç</button>' +
+      '</div>' +
+    '</div>';
+
+  function renderDots(){
+    let h = '';
+    for (let i = 0; i < 4; i++) h += '<span class="pin-dot' + (i < entered.length ? ' filled' : '') + '"></span>';
+    ov.querySelector('#pinDots').innerHTML = h;
+  }
+  function close(){ ov.remove(); document.removeEventListener('keydown', onKey, true); }
+  function shake(){ const c = ov.querySelector('.pin-card'); if (!c) return; c.classList.remove('pin-shake'); void c.offsetWidth; c.classList.add('pin-shake'); }
+  function cancel(){ close(); try { opts.onCancel && opts.onCancel(); } finally { focusBarcode(); } }
+  function submit(){
+    const pin = entered;
+    entered = ''; renderDots();   // sonraki deneme için temizle (yanlışsa kutu açık kalır)
+    try { opts.onComplete && opts.onComplete(pin, { close, shake }); } catch(e){ console.warn('PIN onComplete:', e); }
+  }
+  function press(k){
+    if (k === 'C') { entered = ''; renderDots(); return; }
+    if (k === '⌫') { entered = entered.slice(0, -1); renderDots(); return; }
+    if (!/^\d$/.test(k) || entered.length >= 4) return;
+    entered += k; renderDots();
+    if (entered.length === 4) setTimeout(submit, 120);
+  }
+  function onKey(e){
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cancel(); return; }
+    if (/^\d$/.test(e.key)) { e.preventDefault(); e.stopPropagation(); press(e.key); }
+    else if (e.key === 'Backspace') { e.preventDefault(); e.stopPropagation(); press('⌫'); }
+  }
+
+  document.body.appendChild(ov);
+  renderDots();
+  ov.querySelectorAll('.pin-key').forEach(b => b.addEventListener('click', () => press(b.dataset.k)));
+  ov.querySelector('#pinCancel').addEventListener('click', cancel);
+  ov.addEventListener('click', e => { if (e.target === ov) cancel(); });
+  if (opts.showChangeLink) {
+    const cl = ov.querySelector('#pinChangeLink');
+    if (cl) cl.addEventListener('click', () => { close(); (opts.onChange || startChangePinFlow)(); });
+  }
+  document.addEventListener('keydown', onKey, true);
+}
+
+// "Yönetici modu açık değilse PIN iste; doğruysa işlemi çalıştır" sarmalayıcı
+function requireAdmin(action){
+  if (isAdmin()) { action(); return; }
+  askPin({
+    title: 'Yönetici PIN gerekli',
+    subtitle: 'Bu işlem için 4 haneli PIN girin',
+    showChangeLink: true,
+    onComplete: function(pin, ui){
+      if (pin === getAdminPin()) { ui.close(); enterAdmin(); action(); }
+      else { ui.shake(); flash('🔒 PIN yanlış — işlem yapılmadı', false); }
+    }
+  });
+}
+
+// PIN değiştir akışı: mevcut PIN → yeni PIN → yeni PIN (tekrar)
+function startChangePinFlow(){
+  askPin({
+    title: 'Mevcut PIN',
+    subtitle: 'Değiştirmek için önce mevcut PIN',
+    onComplete: function(cur, ui){
+      if (cur !== getAdminPin()) { ui.shake(); flash('🔒 Mevcut PIN yanlış', false); return; }
+      ui.close();
+      askPin({
+        title: 'Yeni PIN',
+        subtitle: '4 haneli yeni PIN belirle',
+        onComplete: function(n1, ui2){
+          ui2.close();
+          askPin({
+            title: 'Yeni PIN (tekrar)',
+            subtitle: 'Doğrulamak için tekrar girin',
+            onComplete: function(n2, ui3){
+              if (n1 !== n2) { ui3.shake(); flash('PIN\'ler eşleşmedi — tekrar deneyin', false); return; }
+              setAdminPin(n1); ui3.close();
+              flash('✓ PIN değiştirildi', true);
+            }
+          });
+        }
+      });
+    }
+  });
+}
+
+// ── Kilit butonu: açıkken anında kilitler, kilitliyken PIN sorar ──
+function lockButtonClick(){
+  if (isAdmin()) { lockNow(); flash('🔒 Kilitlendi (Kasiyer modu)', true); }
+  else {
+    askPin({
+      title: 'Yönetici PIN',
+      subtitle: 'Yönetici modunu açmak için PIN girin',
+      showChangeLink: true,
+      onComplete: function(pin, ui){
+        if (pin === getAdminPin()) { ui.close(); enterAdmin(); flash('🔓 Yönetici modu açık (5 dk)', true); }
+        else { ui.shake(); flash('🔒 PIN yanlış', false); }
+      }
+    });
+  }
+}
+
+// Kilit butonunun görünümünü güncelle (kilitli/açık + kalan süre)
+function updateLockUI(){
+  const btn = document.getElementById('lockBtn');
+  if (!btn) return;
+  const ico = btn.querySelector('.lock-ico');
+  const lbl = btn.querySelector('.lock-lbl');
+  if (isAdmin()) {
+    btn.classList.add('admin-on');
+    btn.title = 'Yönetici modu AÇIK (kalan ' + _adminRemainStr() + ') — basınca kilitle';
+    if (ico) ico.innerHTML = LOCK_ICON_OPEN;
+    if (lbl) lbl.textContent = 'Açık';
+  } else {
+    btn.classList.remove('admin-on');
+    btn.title = 'Kilitli (Kasiyer modu) — zam/silme için yönetici PIN gerekir';
+    if (ico) ico.innerHTML = LOCK_ICON_CLOSED;
+    if (lbl) lbl.textContent = '';
+  }
+}
+// Açık modda kalan süreyi tazele + 5 dk dolunca butonu kilitli göster
+setInterval(updateLockUI, 15000);
 
 // ÜRÜNLER ekranındaki arama kutusuna odağı geri ver — silme/toplu işlem sonrası
 // kutu "ölü" kalmasın, kullanıcı hemen yazmaya/barkod okutmaya devam edebilsin.
@@ -2952,6 +3145,7 @@ function deleteZeroPriceInCategory() {
   if (prodCatFilter === 'Tümü') { flash('Önce bir kategori seç', false); return; }
   const toDelete = products.filter(p => p.c === prodCatFilter && (!p.p || p.p === 0));
   if (toDelete.length === 0) { flash('Bu kategoride fiyatı 0 olan ürün yok', true); return; }
+  if (!isAdmin()) { requireAdmin(deleteZeroPriceInCategory); return; }   // PIN kilidi: fiyatsız silme
 
   // Örnek göster
   const ornek = toDelete.slice(0, 8).map(p => '  • ' + p.n).join('\n');
@@ -3122,6 +3316,7 @@ function clearBulkSelection() {
 function bulkDeleteSelected() {
   const n = selectedBarcodes.size;
   if (n === 0) return;
+  if (!isAdmin()) { requireAdmin(bulkDeleteSelected); return; }   // PIN kilidi: toplu silme
   const list = products.filter(p => selectedBarcodes.has(p.b));
   const ornek = list.slice(0, 8).map(p => '  • ' + p.n).join('\n');
   appConfirm({
@@ -3333,6 +3528,7 @@ if (document.readyState === 'loading') {
 }
 
 function delProdByIdx(idx) {
+  if (!isAdmin()) { requireAdmin(() => delProdByIdx(idx)); return; }   // PIN kilidi: tek ürün silme
   const p = products[idx];
   if (!p) return;
   const ad = p.n && p.n.length>0 ? p.n.slice(0,30) : '[bu ürün]';
@@ -3876,26 +4072,40 @@ function makeBackup(reason) {
   } catch(e){ console.warn('Yedek alınamadı:', e); }
 }
 
-// save() fonksiyonunu sarmala — her çağrıldığında yedek alsın.
-// Aşırı çoğalmasın diye: aynı dakikada ikinci yedek alınmaz.
+// save() fonksiyonunu sarmala — GÜNDE 1 otomatik yedek al.
+// Eski mantık (her dakika bir otomatik yedek) kaldırıldı: veri artık diske
+// atomik yazılıyor (koc-data.json), bu yüzden her değişiklikte yedek almak
+// gereksiz. Sadece o günün ilk kaydında/açılışında bir otomatik yedek alınır.
+// Riskli toplu işlemler (import, zam, toplu silme) kendi makeBackup'larını
+// AYRICA çağırmaya devam eder — bunlar güvenlik için korunur.
 const _originalSave = save;
-let _lastBackupMin = 0;
+
+// Yerel tarih anahtarı (YYYY-MM-DD)
+function _todayKey() {
+  const d = new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return d.getFullYear() + '-' + mm + '-' + dd;
+}
+
+// Bugün için otomatik yedek yoksa bir tane al; aynı gün tekrar çağrılırsa atla.
+function maybeDailyBackup() {
+  try {
+    const today = _todayKey();
+    if (LS.getItem('koc-last-auto-backup-date') === today) return false;  // bugün zaten alınmış
+    makeBackup('Günlük otomatik yedek');
+    LS.setItem('koc-last-auto-backup-date', today);
+    return true;
+  } catch(e) { console.warn('Günlük yedek kontrolü başarısız:', e); return false; }
+}
+
 save = function() {
   _originalSave.apply(this, arguments);
-  const nowMin = Math.floor(Date.now() / 60000);
-  if (nowMin !== _lastBackupMin) {
-    _lastBackupMin = nowMin;
-    makeBackup('Otomatik');
-  }
+  maybeDailyBackup();   // günde yalnızca ilk kayıtta yedek alınır, sonrakiler atlanır
 };
 
-// İlk yüklemede bir yedek al (çok eski değilse)
-setTimeout(() => {
-  const bs = JSON.parse(LS.getItem('koc-backups') || '[]');
-  if (bs.length === 0 || (Date.now() - bs[0].ts) > 3600000) {
-    makeBackup('Açılış');
-  }
-}, 1500);
+// İlk açılışta günlük yedeği garanti et (o gün hiç değişiklik olmasa bile).
+setTimeout(maybeDailyBackup, 1500);
 
 // ══════════════════════════════════════════════════════════
 // ║  V8 — TEK SEFERLİK: DENEME SATIŞLARINI TEMİZLE         ║
@@ -4410,6 +4620,7 @@ function priceWizTab(name) {
 }
 
 function openPriceUpdateWizard() {
+  if (!isAdmin()) { requireAdmin(openPriceUpdateWizard); return; }   // PIN kilidi: zam/fiyat
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay show';
   overlay.id = 'priceWizOverlay';
@@ -5293,7 +5504,7 @@ function qaSubmit() {
       bodyHtml: escHtml('Bu barkod zaten kayıtlı:\n\n' + existing.n + ' (' + fmt(existing.p) + ')\n\nMevcut ürünü yeni bilgilerle GÜNCELLEMEK ister misin?\n\n• Yeni ad: ' + n + '\n• Yeni fiyat: ' + fmt(p) + '\n• Yeni stok: ' + s + '\n• Kategori: ' + c + '\n• KDV: %' + k),
       okText: '🔄 Güncelle', cancelText: 'Vazgeç',
       onOk: function(){
-        makeBackup('Hızlı ekleme (güncelleme öncesi)');
+        // Tek ürün güncellemesi artık otomatik yedek üretmez (günlük yedek yeterli).
         existing.n = n; existing.p = p; existing.s = s; existing.c = c; existing.k = k;
         _originalSave();
         renderProds(); renderQuick(); refreshCategoryDatalist();
@@ -5308,8 +5519,7 @@ function qaSubmit() {
     return;   // async — gerisi onOk içinde tamamlanır
   }
 
-  // Yeni ürün ekle (senkron)
-  makeBackup('Hızlı ekleme (eklemeden önce)');
+  // Yeni ürün ekle (senkron) — tek ürün eklemesi artık otomatik yedek üretmez.
   products.push({b, n, p, s, c, k});
   _originalSave();
   renderProds(); renderQuick(); refreshCategoryDatalist();
@@ -5323,6 +5533,7 @@ renderCart();
 updateStats();
 updateHeldBadge();
 refreshCategoryDatalist();
+updateLockUI();        // kilit butonu başlangıçta "kilitli" (kasiyer modu) görünsün
 focusBarcode();
 </script>
 </body>

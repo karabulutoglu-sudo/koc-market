@@ -196,6 +196,52 @@ input::placeholder { color: var(--soft); }
 .misc-del-btn { padding:13px; border-radius:10px; border:1.5px solid var(--red); background:rgba(192,57,43,.08); color:var(--red); font-weight:800; cursor:pointer; font-size:14px;}
 .misc-del-btn:hover { background:var(--red); color:#fff;}
 
+/* ══ NEW v2: BARKODSUZ — DOKUNMATİK KART IZGARASI ══ */
+.misc-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; gap:10px;}
+.misc-head-actions { display:flex; gap:8px; align-items:center;}
+.misc-x { border:none; background:transparent; font-size:24px; line-height:1; color:var(--muted); cursor:pointer; padding:4px 8px;}
+.misc-x:hover { color:var(--red);}
+.misc-manage-btn { padding:10px 18px; border-radius:10px; border:2px solid var(--border); background:var(--card); color:var(--muted); font-weight:800; font-size:14px; cursor:pointer; white-space:nowrap;}
+.misc-manage-btn:hover { border-color:var(--accent); color:var(--accent);}
+.misc-manage-btn.active { background:linear-gradient(135deg,#E67E22,#F39C12); border-color:#E67E22; color:#fff;}
+.misc-note { font-size:14px; color:var(--muted); margin-bottom:14px; font-weight:600;}
+.misc-note.manage { color:#C77016; font-weight:800;}
+
+.misc-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; max-height:58vh; overflow-y:auto; padding:2px;}
+.misc-card { position:relative; display:flex; flex-direction:column; justify-content:center; align-items:center; gap:6px; min-height:108px; padding:14px 10px; border-radius:14px; border:2px solid var(--accent); background:#fff; box-shadow:0 2px 6px rgba(14,124,134,.12); cursor:pointer; text-align:center; transition:transform .08s; font-family:inherit;}
+.misc-card:active { transform:scale(.95);}
+.misc-card-name { font-size:15px; font-weight:800; color:var(--text); line-height:1.2; word-break:break-word;}
+.misc-card-price { font-size:23px; font-weight:900; color:var(--accent); line-height:1;}
+.misc-card.noprice { border-color:#E67E22; background:#FFF8EE;}
+.misc-card.noprice .misc-card-name { color:#7A4A0E;}
+.misc-card-warn { font-size:14px; font-weight:800; color:#E67E22;}
+
+.misc-card-new { border-style:dashed; border-color:var(--border); background:var(--card-dark); box-shadow:none;}
+.misc-card-new .misc-card-plus { font-size:32px; font-weight:300; line-height:1; color:var(--accent);}
+.misc-card-new .misc-card-newlbl { font-size:13px; font-weight:800; color:var(--muted);}
+.misc-card-new:hover { border-color:var(--accent); border-style:solid;}
+.misc-card-new:hover .misc-card-newlbl { color:var(--accent);}
+
+/* Yönet modu kartları */
+.misc-card.managing { border-color:#E67E22; cursor:default; justify-content:flex-start;}
+.misc-card.managing:active { transform:none;}
+.misc-card-actions { display:flex; gap:6px; margin-top:auto; width:100%;}
+.misc-card-actions button { padding:10px 4px; border-radius:8px; border:none; font-weight:800; font-size:13px; cursor:pointer; font-family:inherit;}
+.misc-card-edit { flex:1; background:var(--accent-light); color:var(--accent);}
+.misc-card-edit:active { background:var(--accent); color:#fff;}
+.misc-card-del { flex:0 0 48px; background:rgba(192,57,43,.1); color:var(--red); font-size:15px;}
+.misc-card-del:active { background:var(--red); color:#fff;}
+
+.misc-grid-footer { margin-top:14px; padding-top:12px; border-top:1px solid var(--border);}
+.misc-free-btn { width:100%; padding:15px; border-radius:12px; border:2px solid var(--accent); background:var(--accent-light); color:var(--accent); font-weight:900; font-size:16px; cursor:pointer; font-family:inherit;}
+.misc-free-btn:active { background:var(--accent); color:#fff;}
+
+/* Form görünümü — geri başlığı + öneri pilleri */
+.misc-form-head { display:flex; align-items:center; gap:10px; margin-bottom:14px;}
+.misc-back-btn { border:none; background:var(--card-dark); color:var(--text); font-weight:800; font-size:15px; padding:10px 15px; border-radius:10px; cursor:pointer; font-family:inherit;}
+.misc-back-btn:hover { background:var(--border);}
+.misc-form-suggest { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px;}
+
 /* ══ RIGHT PANEL — QUICK PRODUCTS ══ */
 .quick-head { padding: 8px 12px 6px; border-bottom: 1px solid var(--border); background:var(--card-dark);}
 .quick-title { font-size: 12px; font-weight: 800; color: var(--accent); letter-spacing: 1px; margin-bottom: 6px; }
@@ -603,50 +649,71 @@ input::placeholder { color: var(--soft); }
   </div>
 </div>
 
-<!-- ══ NEW: MISC ITEM OVERLAY ══ -->
+<!-- ══ NEW: MISC ITEM OVERLAY — barkodsuz dokunmatik kart ızgarası ══ -->
 <div id="miscOverlay" class="modal-overlay" onclick="if(event.target===this)closeMisc()">
-  <div class="modal-card" style="max-width:480px">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div class="modal-title">+ BARKODSUZ ÜRÜN</div>
-      <button onclick="closeMisc()" style="border:none;background:transparent;font-size:22px;color:var(--muted);cursor:pointer">✕</button>
-    </div>
-    <div style="font-size:13px;color:var(--muted);margin-bottom:10px">Barkodsuz ürünler (otomotiv, çakmak, sakız vs).<br><b>Kayıtlı ürüne tıkla → direkt sepete</b> &nbsp;|&nbsp; <b>✏ ile düzenle</b> &nbsp;|&nbsp; Yeni ürün için aşağıdaki formu doldur.</div>
-    <div id="miscEditBanner" class="misc-edit-banner" style="display:none">
-      <span>✏ Düzenleme modu — <b id="miscEditName"></b></span>
-      <button onclick="cancelEditMisc()">Yeni ekle</button>
-    </div>
-    <div id="miscQuickPicks" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;max-height:140px;overflow-y:auto;padding:4px"></div>
-    <div class="misc-field">
-      <label>Ürün Adı</label>
-      <input type="text" id="miscName" placeholder="Örn: Çakmak Taşı">
-    </div>
-    <div style="display:flex;gap:10px">
-      <div class="misc-field" style="flex:2">
-        <label>Fiyat (₺) <span style="color:var(--soft);font-weight:500">— KDV dahil</span></label>
-        <input type="text" inputmode="decimal" id="miscPrice" placeholder="0,00" onkeydown="if(event.key==='Enter')addMiscItem()">
+  <div class="modal-card" style="max-width:560px">
+
+    <!-- ───── IZGARA GÖRÜNÜMÜ (varsayılan) ───── -->
+    <div id="miscGridPane">
+      <div class="misc-head">
+        <div class="modal-title">Barkodsuz Hızlı Satış</div>
+        <div class="misc-head-actions">
+          <button id="miscManageBtn" class="misc-manage-btn" onclick="toggleMiscManage()">⚙ Yönet</button>
+          <button class="misc-x" onclick="closeMisc()" title="Kapat">✕</button>
+        </div>
       </div>
-      <div class="misc-field" style="flex:1">
-        <label>Adet</label>
-        <input type="number" id="miscQty" value="1" min="1" onkeydown="if(event.key==='Enter')addMiscItem()">
+      <div id="miscGridNote" class="misc-note">Karta dokun → doğrudan sepete eklenir</div>
+      <div id="miscGrid" class="misc-grid"></div>
+      <div class="misc-grid-footer">
+        <button class="misc-free-btn" onclick="showMiscForm('free')">🧮 Serbest Tutar — fiyatı elle gir</button>
       </div>
     </div>
-    <div class="misc-field">
-      <label>KDV Oranı</label>
-      <select id="miscKdv" style="width:100%;padding:12px 14px;border-radius:8px;border:2px solid var(--border);background:var(--card);color:var(--text);font-size:15px;font-weight:600;outline:none">
-        <option value="1">%1 — Temel gıda</option>
-        <option value="10">%10 — Atıştırmalık / İçecek</option>
-        <option value="20" selected>%20 — Diğer (otomotiv, temizlik…)</option>
-      </select>
+
+    <!-- ───── EKLE / DÜZENLE FORMU (Yönet akışı) ───── -->
+    <div id="miscFormPane" style="display:none">
+      <div class="misc-form-head">
+        <button class="misc-back-btn" onclick="showMiscGrid()">‹ Geri</button>
+        <div class="modal-title" id="miscFormTitle" style="flex:1">Yeni Barkodsuz Ürün</div>
+        <button class="misc-x" onclick="closeMisc()" title="Kapat">✕</button>
+      </div>
+      <div id="miscEditBanner" class="misc-edit-banner" style="display:none">
+        <span>✏ Düzenleme modu — <b id="miscEditName"></b></span>
+        <button onclick="cancelEditMisc()">Yeni ekle</button>
+      </div>
+      <div id="miscFormSuggest" class="misc-form-suggest"></div>
+      <div class="misc-field">
+        <label>Ürün Adı</label>
+        <input type="text" id="miscName" placeholder="Örn: Çakmak Taşı">
+      </div>
+      <div style="display:flex;gap:10px">
+        <div class="misc-field" style="flex:2">
+          <label>Fiyat (₺) <span style="color:var(--soft);font-weight:500">— KDV dahil</span></label>
+          <input type="text" inputmode="decimal" id="miscPrice" placeholder="0,00" onkeydown="if(event.key==='Enter')addMiscItem()">
+        </div>
+        <div class="misc-field" style="flex:1">
+          <label>Adet</label>
+          <input type="number" id="miscQty" value="1" min="1" onkeydown="if(event.key==='Enter')addMiscItem()">
+        </div>
+      </div>
+      <div class="misc-field">
+        <label>KDV Oranı</label>
+        <select id="miscKdv" style="width:100%;padding:12px 14px;border-radius:8px;border:2px solid var(--border);background:var(--card);color:var(--text);font-size:15px;font-weight:600;outline:none">
+          <option value="1">%1 — Temel gıda</option>
+          <option value="10">%10 — Atıştırmalık / İçecek</option>
+          <option value="20" selected>%20 — Diğer (otomotiv, temizlik…)</option>
+        </select>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;padding:10px;background:var(--accent-light);border-radius:8px;cursor:pointer;margin-bottom:14px">
+        <input type="checkbox" id="miscSave" checked style="width:18px;height:18px;cursor:pointer">
+        <span style="font-size:13px;font-weight:700;color:var(--accent)">Ürünü kaydet — kart ızgarasında hızlı satış için</span>
+      </label>
+      <div style="display:flex;gap:10px">
+        <button onclick="showMiscGrid()" style="flex:1;padding:13px;border-radius:10px;border:1px solid var(--border);background:var(--card-dark);color:var(--muted);font-weight:700;cursor:pointer">İPTAL</button>
+        <button id="miscDelBtn" class="misc-del-btn" onclick="deleteMiscFromForm()" style="display:none">🗑 SİL</button>
+        <button id="miscSubmitBtn" onclick="addMiscItem()" style="flex:2;padding:13px;border-radius:10px;border:none;background:linear-gradient(135deg,var(--accent),var(--accent3));color:#fff;font-weight:900;cursor:pointer">✓ SEPETE EKLE</button>
+      </div>
     </div>
-    <label style="display:flex;align-items:center;gap:8px;padding:10px;background:var(--accent-light);border-radius:8px;cursor:pointer;margin-bottom:14px">
-      <input type="checkbox" id="miscSave" checked style="width:18px;height:18px;cursor:pointer">
-      <span style="font-size:13px;font-weight:700;color:var(--accent)">Ürünü kaydet — sağ panelde hızlı ekleme için</span>
-    </label>
-    <div style="display:flex;gap:10px">
-      <button onclick="closeMisc()" style="flex:1;padding:13px;border-radius:10px;border:1px solid var(--border);background:var(--card-dark);color:var(--muted);font-weight:700;cursor:pointer">İPTAL</button>
-      <button id="miscDelBtn" class="misc-del-btn" onclick="deleteMiscFromForm()" style="display:none">🗑 SİL</button>
-      <button id="miscSubmitBtn" onclick="addMiscItem()" style="flex:2;padding:13px;border-radius:10px;border:none;background:linear-gradient(135deg,var(--accent),var(--accent3));color:#fff;font-weight:900;cursor:pointer">✓ SEPETE EKLE</button>
-    </div>
+
   </div>
 </div>
 
@@ -2201,71 +2268,147 @@ const MISC_DEFAULT_PICKS = [
 // Hangi kayıtlı ürünü düzenliyoruz? (null = yeni ekle modu)
 let miscEditingBarcode = null;
 
+// Yönet (ekle/düzenle/sil) modu açık mı?
+let miscManageMode = false;
+
 function openMisc() {
+  miscEditingBarcode = null;
+  miscManageMode = false;
+  showMiscGrid();
+  document.getElementById('miscOverlay').classList.add('show');
+}
+
+// Izgara görünümüne dön (form'dan geri / ekleme sonrası)
+function showMiscGrid() {
+  miscEditingBarcode = null;
+  document.getElementById('miscFormPane').style.display = 'none';
+  document.getElementById('miscGridPane').style.display = 'block';
+  renderMiscGrid();
+}
+
+// Yönet modunu aç/kapat
+function toggleMiscManage() {
+  miscManageMode = !miscManageMode;
+  renderMiscGrid();
+}
+
+// DOKUNMATİK KART IZGARASI — kayıtlı barkodsuz ürünler (MUH- barkodlu)
+function renderMiscGrid() {
+  // SADECE bu modaldan elle eklenmiş ürünleri göster (barkodu MUH- ile başlayanlar).
+  // Bu sayede Excel/PDF'ten gelen gerçek otomotiv ürünleri buraya düşmez.
+  const savedMisc = products.filter(p => String(p.b || '').startsWith('MUH-'));
+  const sorted = [...savedMisc].sort((a, b) => a.n.localeCompare(b.n, 'tr'));
+
+  // Not + Yönet butonu durumu
+  const note = document.getElementById('miscGridNote');
+  const mBtn = document.getElementById('miscManageBtn');
+  if (miscManageMode) {
+    note.textContent = '⚙ Yönet modu — ✏ düzenle · 🗑 sil';
+    note.classList.add('manage');
+    mBtn.classList.add('active');
+    mBtn.textContent = '✓ Bitti';
+  } else {
+    note.textContent = 'Karta dokun → doğrudan sepete eklenir';
+    note.classList.remove('manage');
+    mBtn.classList.remove('active');
+    mBtn.textContent = '⚙ Yönet';
+  }
+
+  let html = sorted.map(p => {
+    const hasPrice = p.p && p.p > 0;
+    const safeBarcode = String(p.b).replace(/'/g, "\\'");
+    const priceHtml = hasPrice
+      ? `<span class="misc-card-price">${fmt(p.p)}</span>`
+      : `<span class="misc-card-warn">▸ fiyat gir</span>`;
+    if (miscManageMode) {
+      // Yönet modu: dokun=düzenle/sil (sepete eklemez)
+      return `<div class="misc-card managing${hasPrice ? '' : ' noprice'}">
+        <span class="misc-card-name">${escHtml(p.n)}</span>
+        ${priceHtml}
+        <div class="misc-card-actions">
+          <button class="misc-card-edit" onclick="editMisc('${safeBarcode}')">✏ Düzenle</button>
+          <button class="misc-card-del" onclick="deleteMiscCard('${safeBarcode}')" title="Sil">🗑</button>
+        </div>
+      </div>`;
+    }
+    // Satış modu: dokun=sepete ekle
+    return `<button class="misc-card${hasPrice ? '' : ' noprice'}" onclick="quickAddMisc('${safeBarcode}')">
+      <span class="misc-card-name">${escHtml(p.n)}</span>
+      ${priceHtml}
+    </button>`;
+  }).join('');
+
+  // En sonda kesik çizgili "+ Yeni ürün" kartı
+  html += `<button class="misc-card misc-card-new" onclick="showMiscForm('new')">
+    <span class="misc-card-plus">+</span>
+    <span class="misc-card-newlbl">Yeni ürün</span>
+  </button>`;
+
+  document.getElementById('miscGrid').innerHTML = html;
+}
+
+// FORM görünümünü aç — mode: 'new' (kayıtlı yeni ürün) | 'free' (serbest tutar)
+function showMiscForm(mode) {
   miscEditingBarcode = null;
   document.getElementById('miscName').value = '';
   document.getElementById('miscPrice').value = '';
   document.getElementById('miscQty').value = qtyMultiplier > 1 ? qtyMultiplier : 1;
-  document.getElementById('miscSave').checked = true;
   const kdvEl = document.getElementById('miscKdv');
   if (kdvEl) kdvEl.value = '20';
   document.getElementById('miscEditBanner').style.display = 'none';
   document.getElementById('miscDelBtn').style.display = 'none';
   document.getElementById('miscSubmitBtn').textContent = '✓ SEPETE EKLE';
-  renderMiscPicks();
-  document.getElementById('miscOverlay').classList.add('show');
-  setTimeout(() => document.getElementById('miscName').focus(), 80);
+  if (mode === 'free') {
+    // Serbest tutar: tek seferlik, kaydetme kapalı, öneri yok
+    document.getElementById('miscFormTitle').textContent = '🧮 Serbest Tutar';
+    document.getElementById('miscSave').checked = false;
+    document.getElementById('miscFormSuggest').style.display = 'none';
+    document.getElementById('miscFormSuggest').innerHTML = '';
+  } else {
+    // Yeni kayıtlı ürün: kaydet açık, hızlı öneriler görünür
+    document.getElementById('miscFormTitle').textContent = 'Yeni Barkodsuz Ürün';
+    document.getElementById('miscSave').checked = true;
+    renderMiscSuggest();
+  }
+  document.getElementById('miscGridPane').style.display = 'none';
+  document.getElementById('miscFormPane').style.display = 'block';
+  setTimeout(() => document.getElementById('miscName').focus(), 60);
 }
 
-function renderMiscPicks() {
-  // SADECE bu modaldan elle eklenmiş ürünleri göster (barkodu MUH- ile başlayanlar).
-  // Bu sayede Excel/PDF'ten gelen gerçek otomotiv ürünleri buraya düşmez.
-  const savedMisc = products.filter(p => String(p.b || '').startsWith('MUH-'));
-  const savedNamesLower = savedMisc.map(p => p.n.toLowerCase());
-
-  let html = '';
-
-  // ── 1) Kayıtlı barkodsuz ürünler ──
-  if (savedMisc.length > 0) {
-    html += `<div class="misc-section-title">💾 Kayıtlı Barkodsuz Ürünler <span class="count">${savedMisc.length}</span><span style="margin-left:auto;font-size:10px;font-weight:600;text-transform:none;letter-spacing:0;color:var(--soft)">tıkla → sepete · ✏ → düzenle/sil</span></div>`;
-    // İsme göre sırala (Türkçe)
-    const sorted = [...savedMisc].sort((a, b) => a.n.localeCompare(b.n, 'tr'));
-    html += sorted.map(p => {
-      const hasPrice = p.p && p.p > 0;
-      const safeBarcode = String(p.b).replace(/'/g, "\\'");
-      const priceLabel = hasPrice
-        ? `<b>${fmt(p.p)}</b>`
-        : `<small>▸ fiyat gir</small>`;
-      const grpClass = hasPrice ? 'misc-pick-group' : 'misc-pick-group noprice';
-      const tipText = hasPrice
-        ? 'Tıkla → direkt sepete ekle  |  ✏ → düzenle, sil, fiyat güncelle'
-        : 'Önce fiyat girilmeli — ✏ ile düzenle';
-      return `<span class="${grpClass}" title="${tipText}">
-        <button class="misc-pick" onclick="quickAddMisc('${safeBarcode}')">${escHtml(p.n)} ${priceLabel}</button>
-        <button class="misc-pick-edit" onclick="editMisc('${safeBarcode}')" title="Düzenle / fiyat güncelle / sil">✏</button>
-      </span>`;
-    }).join(' ');
-  }
-
-  // ── 2) Hızlı öneriler — kayıtlı olmayan varsayılan örnekler ──
-  const newSuggestions = MISC_DEFAULT_PICKS.filter(n => !savedNamesLower.includes(n.toLowerCase()));
-  if (newSuggestions.length > 0) {
-    const titleHtml = savedMisc.length > 0
-      ? `<div class="misc-section-title suggest" style="margin-top:14px">⚡ Hızlı Öneriler <span class="count">yeni ürün için</span></div>`
-      : `<div class="misc-section-title suggest">⚡ Yeni Ürün Ekle — Hızlı Öneriler</div>`;
-    html += titleHtml;
-    html += newSuggestions.map(n => {
+// Form içindeki hızlı öneri pilleri (kayıtlı olmayan varsayılan örnekler)
+function renderMiscSuggest() {
+  const savedNamesLower = products
+    .filter(p => String(p.b || '').startsWith('MUH-'))
+    .map(p => p.n.toLowerCase());
+  const news = MISC_DEFAULT_PICKS.filter(n => !savedNamesLower.includes(n.toLowerCase()));
+  const el = document.getElementById('miscFormSuggest');
+  if (!news.length) { el.innerHTML = ''; el.style.display = 'none'; return; }
+  el.style.display = 'flex';
+  el.innerHTML = `<div style="width:100%;font-size:11px;font-weight:800;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:2px">⚡ Hızlı öneriler</div>` +
+    news.map(n => {
       const safe = n.replace(/'/g, "\\'");
-      return `<button class="misc-pick-new" onclick="pickMiscNew('${safe}')" title="Form'a yaz, fiyat girip kaydet">+ ${escHtml(n)}</button>`;
+      return `<button class="misc-pick-new" onclick="pickMiscNew('${safe}')" title="Adı forma yaz, fiyat girip kaydet">+ ${escHtml(n)}</button>`;
     }).join(' ');
-  }
+}
 
-  // ── Boş durum ──
-  if (!html) {
-    html = `<div class="misc-empty">Henüz barkodsuz ürün yok. Aşağıdaki form ile yeni ürün ekleyebilirsin.</div>`;
-  }
-
-  document.getElementById('miscQuickPicks').innerHTML = html;
+// Yönet modunda kart üzerinden sil
+function deleteMiscCard(barcode) {
+  if (!String(barcode).startsWith('MUH-')) { flash('Bu ürün buradan silinemez', false); return; }
+  const p = products.find(x => x.b === barcode);
+  if (!p) return;
+  appConfirm({
+    title: 'Barkodsuz ürünü sil',
+    bodyHtml: '<b>' + escHtml(p.n) + '</b> barkodsuz ürünü kalıcı olarak silinsin mi?\n\n(Sepetteki kullanım ve geçmiş satışlar etkilenmez.)',
+    okText: '✕ Sil', cancelText: 'Vazgeç',
+    onOk: function(){
+      const idx = products.indexOf(p);
+      if (idx >= 0) products.splice(idx, 1);
+      save();
+      renderQuick();
+      renderMiscGrid();
+      flash('"' + p.n + '" silindi', true);
+    }
+  });
 }
 
 // TEK TIK: Kayıtlı barkodsuz ürünü direkt sepete ekle
@@ -2284,9 +2427,9 @@ function quickAddMisc(barcode) {
   else cart.push({ b: p.b, n: p.n, p: p.p, q: qty, k: (p.k != null ? p.k : 20) });
   qtyMultiplier = 1;
   showMultIndicator();
-  closeMisc();
+  // Modal AÇIK kalsın → arka arkaya birden çok ürün dokunarak eklenebilir
   renderCart();
-  flash((qty>1?qty+' × ':'') + p.n + ' (' + fmt(p.p) + ') eklendi', true);
+  flash((qty>1?qty+' × ':'') + p.n + ' (' + fmt(p.p) + ') sepete eklendi', true);
 }
 
 // DÜZENLEME: Kayıtlı ürünü forma yükle (Sil butonu görünür olur)
@@ -2309,18 +2452,20 @@ function editMisc(barcode) {
   document.getElementById('miscEditBanner').style.display = 'flex';
   document.getElementById('miscDelBtn').style.display = 'block';
   document.getElementById('miscSubmitBtn').textContent = '✓ GÜNCELLE & SEPETE EKLE';
+  document.getElementById('miscFormTitle').textContent = 'Ürün Düzenle';
+  // Düzenlemede öneri pillerini gizle
+  document.getElementById('miscFormSuggest').style.display = 'none';
+  document.getElementById('miscFormSuggest').innerHTML = '';
+  // Form görünümüne geç
+  document.getElementById('miscGridPane').style.display = 'none';
+  document.getElementById('miscFormPane').style.display = 'block';
   setTimeout(() => document.getElementById('miscPrice').focus(), 20);
 }
 
 // "Yeni ekle" butonu — düzenleme modundan çıkıp boş forma dön
 function cancelEditMisc() {
-  miscEditingBarcode = null;
-  document.getElementById('miscName').value = '';
-  document.getElementById('miscPrice').value = '';
-  document.getElementById('miscEditBanner').style.display = 'none';
-  document.getElementById('miscDelBtn').style.display = 'none';
-  document.getElementById('miscSubmitBtn').textContent = '✓ SEPETE EKLE';
-  setTimeout(() => document.getElementById('miscName').focus(), 20);
+  // Düzenleme modundan çıkıp temiz "yeni ürün" formuna dön
+  showMiscForm('new');
 }
 
 // SİL: Düzenleme modundayken kayıtlı ürünü sil
@@ -2343,9 +2488,8 @@ function deleteMiscFromForm() {
       save();
       renderQuick();
       miscEditingBarcode = null;
-      // Forma dön ama açık kalsın (kullanıcı başka ürün ekleyebilir)
-      cancelEditMisc();
-      renderMiscPicks();
+      // Izgaraya dön (silinen kart kaybolsun, kullanıcı devam edebilir)
+      showMiscGrid();
       flash('"' + p.n + '" silindi', true);
     }
   });
@@ -2433,7 +2577,8 @@ function addMiscItem() {
 
   qtyMultiplier = 1;
   showMultIndicator();
-  closeMisc();
+  // Modal açık kalsın → ızgaraya dön (yeni kart görünür, kasiyer devam edebilir)
+  showMiscGrid();
   renderCart();
   flash((qty>1?qty+' × ':'') + name + ' (' + fmt(price) + ', KDV %' + kdv + ') eklendi', true);
 }

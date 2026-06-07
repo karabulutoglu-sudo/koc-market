@@ -1378,10 +1378,6 @@ function parsePrice(str) {
   return parseFloat(s);
 }
 
-// NOT: native confirm/alert/prompt sarmalayıcısı (odak geri-alma sinyali
-// gönderen 'wrapBlockingDialogs') KALDIRILDI — OneDrive dışına taşınınca odak
-// sorunu çözüldü, gerek kalmadı. confirm/alert/prompt artık düz native.
-
 // 🔎 "ÜRÜN ARA" OTOMATİK TEMİZLİK: Barkod OKUTUNCA kutu dolup ürün bulunuyor;
 // 5 sn değişiklik olmazsa kutu kendiliğinden temizlensin ki kullanıcı sonraki
 // barkodu temiz kutuya okutabilsin (elle silmesin). SADECE okutma senaryosu:
@@ -1451,11 +1447,6 @@ function parsePrice(str) {
     }
   }, false);
 })();
-
-// NOT: pencereyi zorla öne getiren 'focusRecovery' bloğu (pointerdown/pointermove/
-// setInterval → document.hasFocus → win:reclaim) KALDIRILDI. Odak çalma sebebi
-// OneDrive'dı; proje OneDrive dışına alınınca çözüldü. Artık pencere normal davranır;
-// kullanıcı başka uygulamaya geçebilir, Koç Market arkada kalabilir.
 
 // ── TOAST ──
 let toastTimer;
@@ -2292,7 +2283,6 @@ function finishSale() {
   paying = false;
   renderQuick();
 
-  showReceipt(sale, false);
   // v14: Toplam tutarı da gösteren toast + odak barkoda → bir sonraki satışa hazır
   flash('✓ Satış tamamlandı — ' + fmt(sale.total), true);
   renderCart();
@@ -2808,10 +2798,6 @@ function pickMiscNew(name) {
 }
 
 // Eski API (geriye uyumluluk için - kullanan kalmadı ama bozulmasın)
-function pickMisc(name, price, kdv) {
-  pickMiscNew(name);
-}
-
 function closeMisc() {
   miscEditingBarcode = null;
   document.getElementById('miscOverlay').classList.remove('show');
@@ -2988,10 +2974,6 @@ setInterval(function(){
     }
   }
 }, 1500);
-// NOT: Sürekli yoklama (setInterval) KALDIRILDI — odak artık sadece gerçek
-// olaylarda barkoda verilir (satış sekmesi açılınca, modal kapanınca, satış
-// tamamlanınca, sepete ürün eklenince, pencere odak kazanınca).
-
 // Pencere odağı geri kazanınca (alt-tab) barkoda dön — yalnızca uygunsa.
 window.addEventListener('focus', focusBarcode);
 // Sekme/pencere yeniden görünür olunca da barkoda dön (odak kilitlenmesi kurtarma).
@@ -3059,10 +3041,6 @@ document.addEventListener('keydown', function(e){
     e.preventDefault();
   }
 });
-
-// NOT: "Ürün ara" kutusuna barkod okutarak ürün aramak İSTENİYOR. Bu yüzden
-// arama kutularına okuyucu girişini engelleyen koruma KALDIRILDI — okutulan
-// barkod kutuya yazılır ve liste o ürüne göre filtrelenir.
 
 // ── PRODUCTS ──
 // Ürünler sekmesindeki aktif kategori filtresi

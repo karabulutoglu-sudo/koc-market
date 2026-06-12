@@ -1,6 +1,6 @@
 {
   "name": "koc-market",
-  "version": "1.0.25",
+  "version": "1.0.26",
   "description": "Koç Market - Satış Sistemi (Electron masaüstü uygulaması)",
   "main": "main.js",
   "author": "Koç Market",
@@ -8,6 +8,7 @@
   "private": true,
   "scripts": {
     "start": "electron .",
+    "postinstall": "electron-builder install-app-deps",
     "dist": "electron-builder",
     "publish": "electron-builder --publish always"
   },
@@ -16,6 +17,7 @@
     "electron-builder": "^24.13.3"
   },
   "dependencies": {
+    "better-sqlite3": "^12.10.0",
     "electron-updater": "^6.2.1"
   },
   "build": {

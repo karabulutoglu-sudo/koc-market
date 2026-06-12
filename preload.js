@@ -19,6 +19,19 @@ contextBridge.exposeInMainWorld('kocStore', {
 // sebebi OneDrive'dı, proje OneDrive dışına alınınca çözüldü; zorla-öne-getirme
 // yamalarına gerek kalmadı.
 
+// Yeni SQLite tabanlı depo köprüsü. kocStore ile aynı veriye gider;
+// ileride çağrı yerleri kademeli olarak buna geçirilebilir.
+contextBridge.exposeInMainWorld('kocDB', {
+  // Anahtar oku → string | null
+  get:    (key)      => ipcRenderer.sendSync('db-get', String(key)),
+  // Anahtar yaz (transaction içinde) → true/false
+  set:    (key, val) => ipcRenderer.sendSync('db-set', { key: String(key), val: String(val) }),
+  // Anahtar sil → true/false
+  delete: (key)      => ipcRenderer.sendSync('db-delete', String(key)),
+  // Tüm depoyu obje olarak döndür → { anahtar: değer, ... }
+  getAll: ()         => ipcRenderer.sendSync('db-get-all')
+});
+
 // Gerçek "Farklı Kaydet" / "Aç" pencereleri (Electron dialog). Asenkron.
 contextBridge.exposeInMainWorld('kocFile', {
   // "Farklı kaydet" penceresi aç, seçilen yola yaz → {ok,path} | {canceled} | {ok:false,error}

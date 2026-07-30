@@ -6,6 +6,7 @@
 <title>KOÇ MARKET - Satış Sistemi v14</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="barcode-core.js"></script>
 <script>
 if(typeof pdfjsLib!=='undefined'){pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';}
 </script>
@@ -1322,8 +1323,8 @@ let sales    = safeLoadJSON('koc-sales', []);
 // ya da görünmez karakterler kalmış olabilir. "8690504001065 " === "8690504001065"
 // false döner — bu yüzden satışta okuyup bulamadığımız ürünler oluyordu.
 function _normBarcode(x){
+  if (window.KocBarcode) return window.KocBarcode.normalize(x);
   if (x == null) return '';
-  // String'e çevir, başsona trim, zero-width karakterleri ve tüm boşluk türlerini sök
   return String(x).trim().replace(/[\u200B-\u200F\uFEFF\s]/g, '');
 }
 
@@ -2024,7 +2025,13 @@ function promptBarkodDuzelt(m, code, codeNorm, benzer){
 }
 
 function handleBarcodeKey(e){
-  if (e.key === 'Enter') { doScan(); return; }
+  if ((window.KocBarcode ? window.KocBarcode.isTerminator(e.key) : (e.key === 'Enter' || e.key === 'Tab'))) {
+    if (e.currentTarget && e.currentTarget.value.trim()) {
+      e.preventDefault();
+      doScan();
+    }
+    return;
+  }
   // × karakteri de çarpma için kullanılsın (fiziksel klavye veya barkod okuyucu için)
   if (e.key === '*' || e.key === 'x' || e.key === 'X') {
     e.preventDefault();
@@ -3012,7 +3019,10 @@ document.addEventListener('pointerdown', (e) => {
 // Gerçek bir yazı alanı odaktaysa ASLA dokunma (KURAL 1).
 document.addEventListener('keydown', function(e){
   if (e.ctrlKey || e.altKey || e.metaKey) return;
-  if (e.key.length > 1 && e.key !== 'Enter' && e.key !== 'Backspace') return;
+  const isTerminator = window.KocBarcode
+    ? window.KocBarcode.isTerminator(e.key)
+    : (e.key === 'Enter' || e.key === 'Tab');
+  if (e.key.length > 1 && !isTerminator && e.key !== 'Backspace') return;
   const inp = _barcodeFocusTarget();        // KURAL 2 + 3
   if (!inp) {
     // ÜRÜNLER ekranında prodSearch'e fallback (kutu pasif kalmasın)
@@ -3035,8 +3045,21 @@ document.addEventListener('keydown', function(e){
   }
   if (document.activeElement === inp) return;  // zaten barkod kutusunda
   if (_isEditableFocused(inp)) return;         // KURAL 1 — başka yazı alanına yazılıyor
+  if (isTerminator) {
+    // Okuyucu rakamları odak başka yerdeyken gönderdiğinde bunları yukarıda barkod
+    // kutusuna yönlendiriyoruz. Son Enter/Tab aynı keydown olayı içinde yeni odaklanan
+    // input'a tekrar gitmez; burada işlemezsek kod kutuda kalır ve sonraki barkodla birleşir.
+    if (inp.value.trim()) {
+      e.preventDefault();
+      doScan();
+    }
+    return;
+  }
   inp.focus();
-  if (e.key.length === 1 && /[\w\d*xX×]/.test(e.key)) {
+  const appendable = window.KocBarcode
+    ? window.KocBarcode.isAppendableKey(e.key)
+    : (e.key.length === 1 && /[\w\d*xX×]/.test(e.key));
+  if (appendable) {
     inp.value += e.key;
     e.preventDefault();
   }

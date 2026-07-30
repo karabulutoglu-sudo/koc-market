@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>KOÇ MARKET - Satış Sistemi v1.0.30</title>
+<title>KOÇ MARKET - Satış Sistemi v1.0.31</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="barcode-core.js"></script>
@@ -490,6 +490,7 @@ body{background:var(--bg);font-family:Inter,"Segoe UI",Tahoma,sans-serif;color:v
 .header{position:fixed;left:0;top:0;bottom:0;width:218px;z-index:50;background:linear-gradient(180deg,#173f49,#0d3039);border:0;padding:22px 16px;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;flex-wrap:nowrap;box-shadow:8px 0 28px rgba(13,48,57,.12)}
 .header>div:first-child{gap:11px!important;padding:0 4px 20px;border-bottom:1px solid rgba(255,255,255,.1)}.header .logo{width:43px;height:43px;border-radius:13px;box-shadow:0 7px 18px rgba(0,0,0,.22)}.header .brand{color:#fff;font-size:15px;letter-spacing:.25px}.header .sub{color:#9fc6c5}
 .header>div:last-child{margin-top:auto!important;display:flex!important;flex-direction:column;align-items:stretch!important;gap:7px!important}.header .stat{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);padding:9px 10px;border-radius:11px;text-align:left}.header .stat-label,.header .stat-val{color:#d8eceb!important}.header #statsCountdown{color:#9fc6c5!important;text-align:center}.header button{background:rgba(255,255,255,.08)!important;border:1px solid rgba(255,255,255,.13)!important;color:#fff!important;border-radius:10px!important;padding:9px!important}
+#statsContainer{width:100%;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px!important;align-items:stretch!important}#statsContainer .stat{min-width:0;padding:8px 7px!important;background:rgba(255,255,255,.075)!important;border:1px solid rgba(255,255,255,.12)!important;overflow:hidden}#statsContainer .stat-label{font-size:9px!important;color:#a9cfcd!important;white-space:nowrap}#statsContainer .stat-val{font-size:12px!important;line-height:1.25!important;color:#fff!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#statsCountdown{grid-column:1/-1;min-height:12px}
 .tabs{position:fixed;left:14px;top:104px;width:190px;z-index:60;background:transparent;display:flex;flex-direction:column;gap:7px;padding:0;border:0}.tab{flex:none;width:100%;padding:13px 14px;border-radius:11px;text-align:left;color:#b9d5d5;font-size:13px}.tab:hover{background:rgba(255,255,255,.07);color:#fff}.tab.active{background:linear-gradient(135deg,var(--accent3),#08756f);box-shadow:0 8px 20px rgba(0,0,0,.2)}
 .content{margin-left:218px;width:calc(100vw - 218px);height:100vh;background:var(--bg);padding:14px;overflow:hidden}.section{border-radius:17px;overflow:hidden}.section.active{animation:premiumIn .18s ease-out}@keyframes premiumIn{from{opacity:.5;transform:translateY(3px)}to{opacity:1;transform:none}}
 .sale-wrap{gap:12px;background:var(--bg);padding:0}.sale-left,.sale-right{border:1px solid var(--border);border-radius:16px;background:#fff;box-shadow:0 10px 30px rgba(22,62,67,.07);overflow:hidden}.sale-left{flex:0 0 61%;border-right:1px solid var(--border)}.sale-right{flex:1}
@@ -1698,7 +1699,7 @@ function toggleStats() {
   if (isHidden) {
     // AÇ
     updateStats();
-    c.style.display = 'flex';
+    c.style.display = 'grid';
     icon.textContent = '🙈';
     lbl.textContent = 'GİZLE';
     let kalan = 30;

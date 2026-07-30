@@ -115,6 +115,8 @@ input::placeholder { color: var(--soft); }
 .cari-pay-list { display:flex;flex-direction:column;gap:6px;max-height:240px;overflow-y:auto;margin-top:9px; }
 .cari-pay-row { width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 12px;border:1px solid var(--border);border-radius:10px;background:var(--card-dark);color:var(--text);font-weight:800;text-align:left; }
 .cari-pay-row small { display:block;color:var(--muted);font-weight:600;margin-top:2px; }
+.cari-quick-add { width:100%;padding:12px;border:1.5px dashed #e1b54f;border-radius:10px;background:#fff8e7;color:#8a6200;font-weight:900;font-size:14px;margin:2px 0 8px; }
+.cari-quick-add:hover { background:#fff1c8;border-style:solid;transform:translateY(-1px); }
 
 /* Cari hesaplar — banka ekstresi gibi akan bakiye */
 .cari-page { height:100%;overflow:hidden;padding:14px 16px;display:flex;flex-direction:column;gap:12px;background:linear-gradient(145deg,#eefafa,var(--bg)); }
@@ -2428,6 +2430,7 @@ function renderCariPaymentPicker() {
       <div class="pay-total-label">Sepet tutarı</div>
       <div class="pay-total-val">${fmt(cartTotal())}</div>
       <input id="cariPaySearch" class="pay-input" style="font-size:16px;text-align:left" placeholder="Cari ara..." value="${escHtml(query)}" oninput="renderCariPaymentPicker()">
+      <button class="cari-quick-add" onclick="openNewCariFromPayment()">＋ YENİ CARİ EKLE</button>
       <div class="cari-pay-list">${customers.length ? customers.map(c => `
         <button class="cari-pay-row" onclick="finishCariSale('${c.id}')">
           <span>${escHtml(c.name)}<small>Mevcut bakiye: ${fmt(window.KocCari.customerBalance(cariState,c.id))}</small></span>
@@ -2582,6 +2585,34 @@ function openNewCariDialog() {
     <button class="btn-finish" onclick="saveNewCari()">CARİYİ KAYDET</button>
     <button class="btn-cancel" onclick="closeCariDialog()">İPTAL</button>
   </div>`);
+}
+
+function openNewCariFromPayment() {
+  _showCariDialog('Yeni Cari Ekle', `<div class="cari-dialog-fields">
+    <div style="padding:10px 12px;background:#fff8e7;border:1px solid #f0d28c;border-radius:9px;color:#765300;font-size:12px">Sepetiniz korunacak. Yeni cari kaydedilince ödeme listesine hemen eklenecek.</div>
+    <input id="newCariName" placeholder="Ad / ünvan">
+    <input id="newCariPhone" placeholder="Telefon (opsiyonel)">
+    <input id="newCariNote" placeholder="Not (opsiyonel)" onkeydown="if(event.key==='Enter')saveNewCariFromPayment()">
+    <button class="btn-finish" onclick="saveNewCariFromPayment()">KAYDET VE SEÇ</button>
+    <button class="btn-cancel" onclick="closeCariDialog()">İPTAL</button>
+  </div>`);
+}
+
+function saveNewCariFromPayment() {
+  try {
+    const next = window.KocCari.addCustomer(cariState,{
+      name:document.getElementById('newCariName').value,
+      phone:document.getElementById('newCariPhone').value,
+      note:document.getElementById('newCariNote').value
+    });
+    const created = next.customers[next.customers.length-1];
+    if (!saveCariState(next)) return flash('Cari kaydedilemedi!',false);
+    selectedCariId = created.id;
+    closeCariDialog();
+    paymentMethod = 'cari';
+    renderCart();
+    flash('✓ Yeni cari eklendi; satış için seçebilirsiniz',true);
+  } catch(err) { flash(err.message || 'Cari kaydedilemedi!',false); }
 }
 
 function saveNewCari() {

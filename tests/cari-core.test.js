@@ -142,3 +142,12 @@ test('gerçek uygulama cari durumunu ayrı güvenli veri anahtarında tutar', ()
   assert.match(html, /safeSaveJSON\('koc-cari-state', nextState\)/);
   assert.doesNotMatch(html, /safeSaveJSON\('koc-prods', nextState\)/);
 });
+
+test('cari ödeme sırasında sepeti bozmadan yeni cari ekleme akışı bulunur', () => {
+  const html = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'index.html'), 'utf8');
+  assert.match(html, /onclick="openNewCariFromPayment\(\)">＋ YENİ CARİ EKLE/);
+  assert.match(html, /function openNewCariFromPayment\(\)/);
+  assert.match(html, /function saveNewCariFromPayment\(\)/);
+  assert.match(html, /paymentMethod = 'cari';\s*renderCart\(\)/);
+  assert.doesNotMatch(html, /function openNewCariFromPayment\(\)[\s\S]{0,1200}cart\s*=\s*\[\]/);
+});

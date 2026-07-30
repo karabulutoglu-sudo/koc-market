@@ -357,17 +357,47 @@ function setupAutoUpdater() {
 
   let updatePromptShown = false
 
+  function formatReleaseNotes(info) {
+    const raw = info && info.releaseNotes
+    let text = ''
+    if (typeof raw === 'string') {
+      text = raw
+    } else if (Array.isArray(raw)) {
+      text = raw.map(item => {
+        if (typeof item === 'string') return item
+        return item && (item.note || item.notes || item.releaseNotes) || ''
+      }).filter(Boolean).join('\n')
+    }
+
+    // GitHub notları Markdown gelir. Electron bilgi kutusunda okunaklı düz metne çevir.
+    text = text
+      .replace(/\r/g, '')
+      .replace(/^#{1,6}\s+/gm, '')
+      .replace(/^\s*[-*]\s+/gm, '• ')
+      .replace(/\*\*(.*?)\*\*/g, '$1')
+      .replace(/`([^`]+)`/g, '$1')
+      .trim()
+
+    return text || 'Bu sürüm için ayrıntılı güncelleme notu bulunmuyor.'
+  }
+
   // ÖNEMLİ: Dinleyiciyi checkForUpdates()'ten ÖNCE kaydet. Güncelleme önceki
   // oturumda zaten indirilmişse 'update-downloaded' kontrol sırasında hemen
   // tetiklenebilir; dinleyici sonra kaydedilirse bu olay kaçar ve pencere çıkmazdı.
-  autoUpdater.on('update-downloaded', () => {
+  autoUpdater.on('update-downloaded', (info) => {
     if (updatePromptShown) return  // aynı oturumda tek sefer sor (çift pencere olmasın)
     updatePromptShown = true
+    const version = info && info.version ? info.version : 'yeni sürüm'
+    const notes = formatReleaseNotes(info)
     dialog.showMessageBox({
       type: 'info',
       title: 'Güncelleme Hazır',
-      message: 'Yeni güncelleme mevcut. Yüklensin mi?',
-      buttons: ['Evet', 'Hayır']
+      message: 'Koç Market ' + version + ' güncellemesi hazır.',
+      detail: 'BU GÜNCELLEMEDE:\n\n' + notes + '\n\nŞimdi kurulup uygulama yeniden başlatılsın mı?',
+      buttons: ['Güncellemeyi Kur', 'Daha Sonra'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true
     }).then(result => {
       if (result.response === 0) autoUpdater.quitAndInstall()
       else updatePromptShown = false  // "Hayır" derse ileride tekrar sorulabilsin

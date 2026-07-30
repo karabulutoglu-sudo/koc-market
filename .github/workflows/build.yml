@@ -25,7 +25,25 @@ jobs:
       - name: Bağımlılıkları yükle
         run: npm install
 
+      - name: Güncelleme notlarını doğrula
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          if (-not (Test-Path -LiteralPath 'RELEASE_NOTES.md')) {
+            throw 'RELEASE_NOTES.md bulunamadı. Açıklamasız sürüm yayınlanamaz.'
+          }
+          $notes = Get-Content -LiteralPath 'RELEASE_NOTES.md' -Raw
+          if ([string]::IsNullOrWhiteSpace($notes) -or $notes -notmatch [regex]::Escape($version)) {
+            throw "RELEASE_NOTES.md içinde sürüm $version bulunmalı."
+          }
+
       - name: Windows x64 NSIS installer üret ve GitHub Releases'a yükle
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run publish
+
+      - name: Güncelleme notlarını GitHub yayınına ekle
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --notes-file RELEASE_NOTES.md

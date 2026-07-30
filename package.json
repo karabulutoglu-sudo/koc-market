@@ -1,6 +1,6 @@
 {
   "name": "koc-market",
-  "version": "1.0.28",
+  "version": "1.0.29",
   "description": "Koç Market - Satış Sistemi (Electron masaüstü uygulaması)",
   "main": "main.js",
   "author": "Koç Market",
@@ -28,6 +28,7 @@
       "main.js",
       "preload.js",
       "barcode-core.js",
+      "cari-core.js",
       "RELEASE_NOTES.md",
       "index.html",
       "build/**/*"

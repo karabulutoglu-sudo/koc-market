@@ -1,14 +1,14 @@
-# Koç Market 1.0.29
+# Koç Market 1.0.30
 
-- Yeni Cari Hesaplar sayfası eklendi.
-- Cari hareketleri banka ekstresi gibi Alınan, Ödenen ve Kalan sütunlarıyla gösteriliyor.
-- Satış ödeme ekranına Nakit, Kredi Kartı ve Cari seçenekleri eklendi.
-- Sepetteki ürünler aranarak seçilen cari hesaba doğrudan aktarılabiliyor.
-- Cari hesaba ürün listesinden manuel ürün eklenebiliyor.
-- Tahsilatlar otomatik olarak en eski açık ürün borcundan başlayarak dağıtılıyor.
-- Açık cari ürünlerine yukarı yönlü fiyat farkları otomatik yansıtılıyor.
-- Fiyat düşüşlerinin cari bakiyeyi azaltmaması katı kural olarak uygulandı.
-- Cari hesaplar tam dosya yedeğine ve uygulama içi geri alma yedeklerine dahil edildi.
-- Mevcut ürün ekleme, ürün güncelleme ve yedekleme özellikleri korundu.
-- Barkod okuyucu odak ve senkronizasyon korumaları yeni ödeme ekranında da muhafaza edildi.
-- Uygulama başlığındaki eski “v14” ibaresi gerçek sürüm numarasıyla değiştirildi.
+- Satış, Ürünler, Cariler ve Geçmiş ekranları premium tasarımla yenilendi.
+- Ana gezinme koyu renkli, sürekli görünen sol menüye taşındı.
+- Satış ekranı gelecekteki dokunmatik POSPC kullanımı düşünülerek düzenlendi.
+- Barkod kutusu ekranın üstünde ve her zaman kolay erişilebilir konumda tutuldu.
+- Sepetteki ürün artırma ve azaltma düğmeleri büyütülerek dokunmatik kullanıma uygun hale getirildi.
+- Aynı ürün tekrar okutulduğunda yeni satır açmadan mevcut satırın adedini artırma davranışı korundu.
+- Nakit, Kredi Kartı ve Cari ödeme ekranları yeni premium görünümle uyumlu hale getirildi.
+- Ürün yönetimi; arama, fiyat güncelleme, yedek ve sistem araçları kart düzenine geçirildi.
+- Cari hesapların banka ekstresi görünümü, çalışan bakiye ve hesap toplamları güçlendirildi.
+- Geçmiş ekranındaki filtre, özet ve grafik alanları daha ferah kart yapısına geçirildi.
+- Küçük ekran ve düşük yükseklikler için otomatik sıkılaşan duyarlı görünüm eklendi.
+- Barkod okuyucu senkronizasyonu, mevcut ürün verileri, cari kuralları ve yedekleme sistemi korundu.

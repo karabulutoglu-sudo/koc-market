@@ -1,0 +1,51 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Koç Market",
+  "version": "2.0.0",
+  "identifier": "com.kocmarket.app",
+  "build": {
+    "frontendDist": "../dist-web",
+    "beforeBuildCommand": "node scripts/hazirla.mjs",
+    "beforeDevCommand": "node scripts/hazirla.mjs"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
+    "publisher": "Koç Market",
+    "shortDescription": "Koç Market Satış Sistemi",
+    "longDescription": "Koç Market - market satış, stok ve cari takip sistemi",
+    "copyright": "Koç Market",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["Turkish"],
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ5ODU2MTcxMjk3MTMyNkQKUldSdE1uRXBjV0dGU1c4Z3dpb2NIc2trdjhkQWVjV3ZwbjdRZ2U5YVdxaWJLZ081UE5kbjM3dWEK",
+      "endpoints": [
+        "https://github.com/karabulutoglu-sudo/koc-market/releases/latest/download/latest.json"
+      ],
+      "windows": { "installMode": "passive" }
+    }
+  }
+}

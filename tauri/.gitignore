@@ -1,0 +1,5 @@
+node_modules/
+dist-web/
+src-tauri/target/
+src-tauri/gen/schemas/
+_GIZLI_ANAHTAR/

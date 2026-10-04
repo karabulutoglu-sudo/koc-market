@@ -1,0 +1,85 @@
+name: Tauri Build & Release
+
+# "tauri-v*" etiketiyle tetiklenir (örn: tauri-v2.0.0).
+# Electron iş akışı (build.yml) "v*" ile çalışır — ikisi birbirine karışmaz.
+on:
+  push:
+    tags:
+      - 'tauri-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Kaynak kodu çek
+        uses: actions/checkout@v5
+
+      - name: Node.js kurulumu
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Rust kurulumu
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust önbelleği
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri/src-tauri -> target
+
+      - name: Bağımlılıkları yükle
+        working-directory: tauri
+        run: npm ci
+
+      - name: Sürüm ve güncelleme notlarını doğrula
+        id: meta
+        run: |
+          $conf = Get-Content -LiteralPath 'tauri/src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
+          $version = $conf.version
+          $tag = "${{ github.ref_name }}"
+          if ($tag -like 'tauri-v*' -and $tag -ne "tauri-v$version") {
+            throw "Etiket ($tag) ile tauri.conf.json sürümü ($version) uyuşmuyor."
+          }
+          $notes = Get-Content -LiteralPath 'tauri/RELEASE_NOTES.md' -Raw
+          if ([string]::IsNullOrWhiteSpace($notes) -or $notes -notmatch [regex]::Escape($version)) {
+            throw "tauri/RELEASE_NOTES.md içinde sürüm $version bulunmalı."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "notes<<NOTLAR_SONU" >> $env:GITHUB_OUTPUT
+          $notes >> $env:GITHUB_OUTPUT
+          "NOTLAR_SONU" >> $env:GITHUB_OUTPUT
+
+      - name: Tauri NSIS kurulumu üret + GitHub'a yükle (ÖN SÜRÜM olarak)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        with:
+          projectPath: tauri
+          tagName: tauri-v__VERSION__
+          releaseName: 'Koç Market __VERSION__'
+          releaseBody: ${{ steps.meta.outputs.notes }}
+          releaseDraft: false
+          # ÖN SÜRÜM: marketteki uygulamalar bunu GÖRMEZ. Test ettikten sonra
+          # GitHub'da "Set as latest release" yapınca güncelleme dağıtılır.
+          prerelease: true
+          includeUpdaterJson: true
+
+      - name: Electron → Tauri köprüsü (latest.yml) üret ve yükle
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $v = "${{ steps.meta.outputs.version }}"
+          $exe = Get-ChildItem 'tauri/src-tauri/target/release/bundle/nsis/*-setup.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'NSIS kurulum dosyası bulunamadı.' }
+          node tauri/scripts/electron-kopru.mjs $exe.FullName $v kopru
+          gh release upload "tauri-v$v" "kopru/koc-market-tauri-setup-$v.exe" "kopru/latest.yml" --clobber

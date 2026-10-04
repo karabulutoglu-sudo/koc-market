@@ -1,0 +1,96 @@
+# Koç Market — Tauri Sürümü (2.0.0)
+
+Electron uygulamasının Tauri'ye taşınmış hâli. **Electron dosyalarına dokunulmadı**;
+Tauri her şeyiyle bu `tauri/` klasöründe yaşar. `index.html` ana klasörde tek kaynak
+olarak kalır — iki uygulama da aynı dosyayı kullanır.
+
+## Klasör yapısı
+
+```
+KocMarket/
+├─ index.html, cari-core.js, barcode-core.js   ← ORTAK uygulama (değişmedi)
+├─ main.js, preload.js, package.json            ← Electron (değişmedi)
+├─ .github/workflows/build.yml                  ← Electron derleme (v* etiketi)
+├─ .github/workflows/tauri-build.yml            ← Tauri derleme (tauri-v* etiketi)
+└─ tauri/
+   ├─ RELEASE_NOTES.md        ← her sürümde güncelle (sürüm numarası geçmeli)
+   ├─ scripts/hazirla.mjs     ← index.html kopyasını hazırlar, CDN → yerel
+   ├─ scripts/electron-kopru.mjs ← Electron'un güncellemeyle Tauri'ye geçmesi
+   ├─ _GIZLI_ANAHTAR/         ← güncelleme imza anahtarı (GitHub'a GİTMEZ)
+   └─ src-tauri/
+      ├─ tauri.conf.json      ← sürüm numarası burada
+      ├─ src/lib.rs           ← ana süreç (main.js karşılığı)
+      ├─ src/store.rs         ← SQLite depo + Electron'dan veri taşıma
+      └─ src/bridge.js        ← kocStore/kocDB/kocFile köprüsü (preload.js karşılığı)
+```
+
+## Veriler nerede?
+
+| | Electron (eski) | Tauri (yeni) |
+|---|---|---|
+| Veritabanı | `%APPDATA%\Koç Market\kocmarket.db` | `%APPDATA%\com.kocmarket.app\kocmarket.db` |
+| Günlük yedek (7 gün) | `...\Koç Market\backups\` | `...\com.kocmarket.app\backups\` |
+| Acil durum aynası | `koc-data.json` | `koc-data.json` |
+| Hata günlüğü | `logs\` | `logs\` |
+
+İlk açılışta Tauri, Electron veritabanının **kopyasını** alır, oradan okur, her kaydı
+birebir doğrular. Electron dosyalarına yazılmaz, hiçbir şey silinmez. Taşıma öncesi
+tam yedek: `backups\electron-gecis-yedek-TARİH.json`.
+Veri okunamazsa uygulama **boş açılmaz**, uyarı verip kapanır (Electron verisi yerinde).
+
+> Hatırlatma: JSON yedek dosyası ile programı her zaman birlikte sakla (USB + e-posta).
+
+## TEK SEFERLİK HAZIRLIK
+
+0. `tauri\github-workflow\tauri-build.yml` dosyasını **`.github\workflows\`** klasörüne kopyala
+   (Electron'un `build.yml`'ının yanına). Uzaktan yazılamayan korumalı bir klasör olduğu için
+   oraya ben koyamadım.
+1. GitHub → repo → **Settings → Secrets and variables → Actions → New repository secret**
+   - Ad: `TAURI_SIGNING_PRIVATE_KEY`
+   - Değer: `tauri/_GIZLI_ANAHTAR/kocmarket-guncelleme.key` dosyasının **içeriği** (Not Defteri ile aç, tamamını kopyala)
+2. Bu anahtarı **USB'ye yedekle**. Kaybolursa Tauri güncellemeleri imzalanamaz
+   (o zaman bir kez elle kurulum gerekir). E-postaya koyma, GitHub'a yükleme.
+
+## YAYINLAMA (her sürümde)
+
+PowerShell, `C:\KocMarket` içinde:
+
+```powershell
+git add .
+git commit -m "Tauri 2.0.0"
+git push
+git tag tauri-v2.0.0
+git push origin tauri-v2.0.0
+```
+
+GitHub Actions ~10-15 dk'da kurulum dosyasını üretir ve **ÖN SÜRÜM (pre-release)**
+olarak yayınlar. Ön sürümü marketteki uygulama GÖRMEZ — önce test edebilirsin.
+
+## TEST → MARKETE DAĞITIM
+
+1. GitHub → Releases → `tauri-v2.0.0` → `koc-market-tauri-setup-2.0.0.exe` indir,
+   **bu bilgisayarda** kur ve dene (bu bilgisayardaki Electron verisini taşır).
+2. Her şey yolundaysa aynı sayfada **Edit → "Set as the latest release"** işaretle,
+   "Set as a pre-release" işaretini kaldır → **Update release**.
+3. Marketteki Electron bir sonraki açılışta "Koç Market 2.0.0 güncellemesi hazır" der.
+   - "Güncellemeyi Kur" → Tauri kurulumu açılır (bir kerelik ekran).
+   - "Daha Sonra" → uygulama kapatılınca sessizce kurulur.
+4. Masaüstündeki "Koç Market" kısayolu artık Tauri'yi açar, veriler taşınmış olur.
+
+## Sonraki sürümler
+
+`tauri/src-tauri/tauri.conf.json` ve `tauri/package.json` içindeki `version`'ı artır,
+`tauri/RELEASE_NOTES.md`'yi güncelle, `tauri-vX.Y.Z` etiketiyle yayınla, test et,
+"latest" yap. Tauri kendi güncelleyicisiyle "Güncellemeyi Kur / Daha Sonra" sorar.
+
+## Electron'u kaldırma (acele yok)
+
+Birkaç hafta sorunsuz çalıştıktan sonra Ayarlar → Uygulamalar'da **eski** "Koç Market"i
+kaldırabilirsin (iki tane görünür; Electron olanın sürümü 1.1.0). Electron kaldırıcısı
+aynı adlı masaüstü kısayolunu da silebilir — silerse Tauri kurulumunu tekrar çalıştır
+(veri etkilenmez). Electron'un veri klasörü kaldırmada silinmez.
+
+## Yerelde deneme (isteğe bağlı)
+
+Rust + Visual Studio Build Tools kuruluysa: `cd tauri`, `npm ci`, `npm run dev`.
+Geliştirme modunda güncelleyici çalışmaz.

@@ -175,6 +175,35 @@
       ' kayıt).\nEski veriler silinmedi, yedek olarak duruyor.', '#1b7f3b');
     kocStore.write('koc-tauri-gecis-bildirildi', new Date().toISOString());
   }
+  // ESKİ PROGRAM BEKÇİSİ: taşımadan sonra Electron kullanıldıysa kalıcı kırmızı uyarı
+  if (rep.electron_used) {
+    var eu = rep.electron_used;
+    var put = function () {
+      var box = document.createElement('div');
+      box.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2147483647;' +
+        'width:min(560px,92vw);background:#fff;color:#222;border:4px solid #b00020;border-radius:14px;' +
+        'box-shadow:0 10px 40px rgba(0,0,0,.5);font:15px/1.5 Segoe UI,Arial,sans-serif;padding:22px 24px';
+      var lines = [
+        'Eski Koç Market programı (Electron), yeni programa geçtikten SONRA açılmış ve verisi değişmiş.',
+        '',
+        'Son değişiklik: ' + eu.when,
+        (eu.new_sales ? ('Eski programda yaklaşık ' + eu.new_sales + ' yeni satış yapılmış.') : ('Değişen veri alanı: ' + eu.changed_keys)),
+        '',
+        'Bu değişiklikler YENİ PROGRAMDA YOK. Eksik satışları buraya elle girin.',
+        'Eski programı bir daha açmayın; görev çubuğunda eski simge varsa kaldırın.',
+        eu.backup ? ('\nEski programın verisi yedeklendi:\n' + eu.backup) : ''
+      ];
+      box.innerHTML = '<div style="font-weight:700;font-size:19px;color:#b00020;margin-bottom:10px">⚠ ESKİ PROGRAM KULLANILMIŞ</div>';
+      var p = document.createElement('div'); p.style.whiteSpace = 'pre-wrap'; p.textContent = lines.join('\n'); box.appendChild(p);
+      var b = document.createElement('button');
+      b.textContent = 'Anladım';
+      b.style.cssText = 'margin-top:16px;width:100%;padding:12px;border:0;border-radius:10px;background:#b00020;color:#fff;font:bold 16px Segoe UI,Arial,sans-serif;cursor:pointer';
+      b.onclick = function () { invoke('electron_ack').finally(function () { box.remove(); }); };
+      box.appendChild(b);
+      document.body.appendChild(box);
+    };
+    if (document.body) put(); else document.addEventListener('DOMContentLoaded', put);
+  }
   if (rep.warnings && rep.warnings.length) {
     toast('⚠ ' + rep.warnings.join('\n'), '#b26a00');
   }

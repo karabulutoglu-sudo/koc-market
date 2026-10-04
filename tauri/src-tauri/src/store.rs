@@ -30,6 +30,17 @@ pub struct Store {
     pub mem: Kv,
     json_path: PathBuf,
     closed: bool,
+    /// Eski program uyarısı "Anladım" denince kaydedilecek yeni taban: (parmak izi, kontrol yedeği)
+    pending_electron_ack: Option<(String, Option<String>)>,
+}
+
+/// Taşımadan SONRA eski Electron programı kullanılmışsa arayüze giden bilgi.
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct ElectronUse {
+    pub when: String,               // son değişiklik zamanı (yerel saat)
+    pub changed_keys: usize,        // değişen/eklenen veri alanı sayısı
+    pub new_sales: Option<i64>,     // koc-sales farkı (pozitifse)
+    pub backup: Option<String>,     // eski programın güncel verisinin yedeği
 }
 
 /// Uygulama açılışında ne olduğunu anlatan rapor (günlüğe + arayüze).
@@ -39,6 +50,7 @@ pub struct InitReport {
     pub migrated_from: Option<String>,
     pub migrated_keys: usize,
     pub warnings: Vec<String>,
+    pub electron_used: Option<ElectronUse>,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -87,6 +99,37 @@ fn mtime(p: &Path) -> Option<SystemTime> {
     fs::metadata(p).and_then(|m| m.modified()).ok()
 }
 
+/// Electron dosyalarının parmak izi: (değişme zamanı ms, boyut). İçerik okunmaz.
+fn fingerprint(dir: &Path) -> String {
+    let one = |p: PathBuf| -> serde_json::Value {
+        match fs::metadata(&p) {
+            Ok(m) => {
+                let ms = m.modified().ok()
+                    .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as u64).unwrap_or(0);
+                serde_json::json!([ms, m.len()])
+            }
+            Err(_) => serde_json::Value::Null,
+        }
+    };
+    let db = dir.join("kocmarket.db");
+    serde_json::json!([
+        one(db.clone()),
+        one(PathBuf::from(format!("{}-wal", db.display()))),
+        one(dir.join("koc-data.json")),
+    ]).to_string()
+}
+
+fn latest_backup(dir: &Path, prefix: &str) -> Option<PathBuf> {
+    let mut v: Vec<PathBuf> = fs::read_dir(dir).ok()?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.file_name().and_then(|n| n.to_str())
+            .map(|n| n.starts_with(prefix) && n.ends_with(".json")).unwrap_or(false))
+        .collect();
+    v.sort();
+    v.pop()
+}
+
 fn read_json_kv(path: &Path) -> Option<Kv> {
     let raw = fs::read_to_string(path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
@@ -106,6 +149,7 @@ fn read_json_kv(path: &Path) -> Option<Kv> {
 // ── Electron verisini bul ve oku (salt-okunur, kopya üzerinden) ─────
 
 struct Source {
+    dir: PathBuf,
     desc: String,
     data: Kv,
     newest: Option<SystemTime>,
@@ -177,7 +221,7 @@ fn find_electron_source(candidates: &[PathBuf], snap_root: &Path, dir: &Path) ->
                 Some(b) => newest > b.newest,
             };
             if better {
-                best = Some(Source { desc, data, newest });
+                best = Some(Source { dir: cand.clone(), desc, data, newest });
             }
         }
     }
@@ -198,8 +242,9 @@ impl Store {
 
         match Self::open_sqlite(&dir) {
             Ok(conn) => {
-                let mut st = Store { dir: dir.clone(), conn: Some(conn), mem: Kv::new(), json_path, closed: false };
+                let mut st = Store { dir: dir.clone(), conn: Some(conn), mem: Kv::new(), json_path, closed: false, pending_electron_ack: None };
                 st.migrate_if_needed(electron_candidates, &mut report)?; // geçiş hatası = açılma
+                st.check_electron_usage(electron_candidates, &mut report); // yalnızca uyarı, asla engellemez
                 st.load_mem_from_sqlite().map_err(|e| format!("Veri okunamadı: {e}"))?;
                 report.engine = "sqlite".into();
                 log_line(&dir, &format!("SQLite aktif: {} anahtar", st.mem.len()));
@@ -227,7 +272,7 @@ impl Store {
                         mem = src.data;
                     }
                 }
-                let st = Store { dir, conn: None, mem, json_path, closed: false };
+                let st = Store { dir, conn: None, mem, json_path, closed: false, pending_electron_ack: None };
                 st.persist_json().map_err(|e| format!("JSON deposu yazılamadı: {e}"))?;
                 report.engine = "json".into();
                 Ok((st, report))
@@ -279,7 +324,8 @@ impl Store {
                 let backups = self.dir.join("backups");
                 fs::create_dir_all(&backups).map_err(|e| e.to_string())?;
                 let bj = serde_json::to_vec(&src.data).map_err(|e| e.to_string())?;
-                atomic_write(&backups.join(format!("electron-gecis-yedek-{}.json", stamp())), &bj)
+                let gecis_yedek = backups.join(format!("electron-gecis-yedek-{}.json", stamp()));
+                atomic_write(&gecis_yedek, &bj)
                     .map_err(|e| format!("Geçiş yedeği yazılamadı: {e}"))?;
 
                 // 2) Tek transaction içinde taşı
@@ -317,6 +363,10 @@ impl Store {
                 log_line(&self.dir, &format!("GEÇİŞ TAMAM: {} anahtar {} → Tauri", src.data.len(), src.desc));
                 report.migrated_from = Some(src.desc.clone());
                 report.migrated_keys = src.data.len();
+                // Eski program bekçisi için taban: Electron dosyalarının parmak izi
+                self.meta_set("electron_dir", &src.dir.display().to_string());
+                self.meta_set("electron_fp", &fingerprint(&src.dir));
+                self.meta_set("electron_base", &gecis_yedek.display().to_string());
                 source_desc = src.desc;
             }
         }
@@ -327,6 +377,104 @@ impl Store {
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    fn meta_get(&self, key: &str) -> Option<String> {
+        self.conn.as_ref()?.query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0)).ok()
+    }
+
+    fn meta_set(&self, key: &str, val: &str) {
+        if let Some(c) = self.conn.as_ref() {
+            if let Err(e) = c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", params![key, val]) {
+                log_line(&self.dir, &format!("meta yazılamadı ({key}): {e}"));
+            }
+        }
+    }
+
+    /// ESKİ PROGRAM BEKÇİSİ: Taşımadan sonra Electron verisi değiştiyse (eski
+    /// program yanlışlıkla açılıp kullanıldıysa) uyarı hazırla. Electron
+    /// dosyalarına YAZMAZ; yalnızca tarih/boyuta bakar, gerekirse KOPYASINI okur.
+    fn check_electron_usage(&mut self, candidates: &[PathBuf], report: &mut InitReport) {
+        let dir = match self.meta_get("electron_dir") {
+            Some(d) if d.is_empty() => return, // Electron yok / kaldırılmış
+            Some(d) => PathBuf::from(d),
+            None => {
+                // 2.0.0'dan yükseltme veya temiz kurulum: tabanı şimdi kaydet, uyarma.
+                let found = candidates.iter().find(|c| c.join("kocmarket.db").exists() || c.join("koc-data.json").exists());
+                match found {
+                    Some(c) => {
+                        self.meta_set("electron_dir", &c.display().to_string());
+                        self.meta_set("electron_fp", &fingerprint(c));
+                        if let Some(b) = latest_backup(&self.dir.join("backups"), "electron-gecis-yedek-") {
+                            self.meta_set("electron_base", &b.display().to_string());
+                        }
+                        log_line(&self.dir, &format!("Eski program bekçisi tabanı kaydedildi: {}", c.display()));
+                    }
+                    None => self.meta_set("electron_dir", ""),
+                }
+                return;
+            }
+        };
+        let db = dir.join("kocmarket.db");
+        let json = dir.join("koc-data.json");
+        if !db.exists() && !json.exists() {
+            log_line(&self.dir, "Eski program verisi bulunamadı (kaldırılmış). Bekçi kapatıldı.");
+            self.meta_set("electron_dir", "");
+            return;
+        }
+        let cur = fingerprint(&dir);
+        if self.meta_get("electron_fp").as_deref() == Some(cur.as_str()) {
+            return; // değişiklik yok
+        }
+
+        // DEĞİŞMİŞ: ayrıntıyı çıkar (kopya üzerinden), eski programın verisini yedekle.
+        let wal = PathBuf::from(format!("{}-wal", db.display()));
+        let newest = [mtime(&db), mtime(&wal), mtime(&json)].into_iter().flatten().max();
+        let when = newest
+            .map(|t| chrono::DateTime::<chrono::Local>::from(t).format("%d.%m.%Y %H:%M").to_string())
+            .unwrap_or_else(|| "bilinmeyen bir zamanda".into());
+        let current: Option<Kv> = if db.exists() {
+            read_electron_db(&db, &self.dir.join("migration").join(format!("kontrol-{}", stamp()))).ok()
+        } else {
+            read_json_kv(&json)
+        };
+        let base: Option<Kv> = self.meta_get("electron_base").and_then(|p| read_json_kv(Path::new(&p)));
+        let mut info = ElectronUse { when, ..Default::default() };
+        let mut backup_path: Option<String> = None;
+        if let Some(cur_kv) = &current {
+            let backups = self.dir.join("backups");
+            let _ = fs::create_dir_all(&backups);
+            let p = backups.join(format!("electron-kontrol-{}.json", stamp()));
+            if let Ok(bytes) = serde_json::to_vec(cur_kv) {
+                if atomic_write(&p, &bytes).is_ok() {
+                    backup_path = Some(p.display().to_string());
+                }
+            }
+            if let Some(b) = &base {
+                info.changed_keys = cur_kv.iter().filter(|(k, v)| b.get(*k) != Some(*v)).count();
+                let count = |m: &Kv| m.get("koc-sales")
+                    .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(s).ok())
+                    .map(|v| v.len() as i64);
+                if let (Some(a), Some(c)) = (count(b), count(cur_kv)) {
+                    if c > a { info.new_sales = Some(c - a); }
+                }
+            }
+        }
+        info.backup = backup_path.clone();
+        log_line(&self.dir, &format!(
+            "UYARI: Eski program taşımadan sonra kullanılmış ({}). Değişen alan: {}, yeni satış: {:?}, yedek: {:?}",
+            info.when, info.changed_keys, info.new_sales, info.backup));
+        self.pending_electron_ack = Some((cur, backup_path));
+        report.electron_used = Some(info);
+    }
+
+    /// Kullanıcı uyarıyı okudu: yeni durumu taban kabul et (aynı şey için tekrar uyarma).
+    pub fn ack_electron(&mut self) {
+        if let Some((fp, base)) = self.pending_electron_ack.take() {
+            self.meta_set("electron_fp", &fp);
+            if let Some(b) = base { self.meta_set("electron_base", &b); }
+            log_line(&self.dir, "Eski program uyarısı kullanıcı tarafından onaylandı.");
+        }
     }
 
     fn persist_json(&self) -> std::io::Result<()> {

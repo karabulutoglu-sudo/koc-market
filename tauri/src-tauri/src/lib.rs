@@ -108,6 +108,15 @@ fn file_open(app: AppHandle) -> Value {
     }
 }
 
+/// "Eski program kullanılmış" uyarısında "Anladım" → yeni durumu taban kabul et.
+#[tauri::command]
+fn electron_ack(state: tauri::State<'_, AppState>) {
+    if let Ok(mut g) = state.store.lock() {
+        if let Some(st) = g.as_mut() { st.ack_electron(); }
+    }
+    if let Ok(mut r) = state.report.lock() { r.electron_used = None; }
+}
+
 /// JS yazma kuyruğu boşaldı → depoyu kapat ve çık (ya da güncellemeyi kur).
 #[tauri::command]
 fn flush_done(app: AppHandle) {
@@ -116,8 +125,13 @@ fn flush_done(app: AppHandle) {
 
 // ── Yalnızca geliştirme (debug) derlemesinde: otomatik test kancaları ──
 #[tauri::command]
-fn test_log(msg: String) {
-    if cfg!(debug_assertions) { println!("[TEST] {msg}"); }
+fn test_log(app: AppHandle, msg: String) {
+    if cfg!(debug_assertions) {
+        if msg == "pencere-basligi" {
+            let t = app.get_webview_window("main").and_then(|w| w.title().ok()).unwrap_or_default();
+            println!("[TEST] pencere başlığı = {t}");
+        } else { println!("[TEST] {msg}"); }
+    }
 }
 
 #[tauri::command]
@@ -299,7 +313,7 @@ pub fn run() {
             #[cfg(not(debug_assertions))]
             pending_update: Mutex::new(None),
         })
-        .invoke_handler(tauri::generate_handler![kv_apply, kv_info, file_save, file_open, flush_done, test_log, test_close])
+        .invoke_handler(tauri::generate_handler![kv_apply, kv_info, file_save, file_open, flush_done, electron_ack, test_log, test_close])
         .setup(|app| {
             let handle = app.handle().clone();
             let dir = std::env::var("KOC_DATA_DIR").map(PathBuf::from)
@@ -333,8 +347,10 @@ pub fn run() {
 
             // Pencere: index.html istendiğinde GÜNCEL veri + köprü enjekte edilir
             let h2 = handle.clone();
+            // Başlıkta sürüm: eski (Electron) programla bir bakışta ayırt edilsin
+            let win_title = format!("Koç Market {}", app.package_info().version);
             let win = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                .title("Koç Market")
+                .title(&win_title)
                 .inner_size(1280.0, 800.0)
                 .min_inner_size(900.0, 600.0)
                 .maximized(true)

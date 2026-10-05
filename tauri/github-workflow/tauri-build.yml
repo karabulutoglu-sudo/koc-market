@@ -46,6 +46,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Açılış aktarım testleri başarısız.' }
           npm run test:rust
           if ($LASTEXITCODE -ne 0) { throw 'Rust açılış testleri başarısız.' }
+          npm run hazirla
+          if ($LASTEXITCODE -ne 0) { throw 'Web preparation failed.' }
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
+          if ($LASTEXITCODE -ne 0) { throw 'Repair and backup tests failed.' }
 
       - name: Sürüm ve güncelleme notlarını doğrula
         id: meta

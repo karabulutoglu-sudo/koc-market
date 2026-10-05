@@ -18,6 +18,11 @@
 
   var mem = new Map();
   Object.keys(boot.data || {}).forEach(function (k) { mem.set(k, String(boot.data[k])); });
+  var repairActive = false;
+
+  function ensureWritable() {
+    if (repairActive) throw new Error('Türkçe onarım önizlemesi açık. Önce onarımı tamamlayın veya iptal edin.');
+  }
 
   function invoke(cmd, args) {
     return window.__TAURI_INTERNALS__.invoke(cmd, args || {});
@@ -106,8 +111,8 @@
   // ── window.kocStore (index.html'in kullandığı) ───────────────────
   var kocStore = {
     read: function (key) { key = String(key); return mem.has(key) ? mem.get(key) : null; },
-    write: function (key, val) { key = String(key); val = String(val); mem.set(key, val); enqueue(key, 'set', val); return true; },
-    remove: function (key) { key = String(key); mem.delete(key); enqueue(key, 'del', null); return true; },
+    write: function (key, val) { ensureWritable(); key = String(key); val = String(val); mem.set(key, val); enqueue(key, 'set', val); return true; },
+    remove: function (key) { ensureWritable(); key = String(key); mem.delete(key); enqueue(key, 'del', null); return true; },
     keys: function () { return Array.from(mem.keys()); }
   };
   Object.defineProperty(kocStore, '__tauri', { value: true });
@@ -138,7 +143,36 @@
     engine: boot.engine,
     info: function () { return invoke('kv_info'); },
     pendingWrites: function () { return pending.size + (running ? 1 : 0); },
-    flush: function () { return drain(15000); }
+    flush: function () { return drain(15000); },
+    hasEncodingDamage: function () {
+      return ['koc-prods', 'koc-sales', 'koc-held', 'koc-cari-state'].some(function (key) {
+        return /[\u00c2\u00c3\u00c4\u00c5\u00e2\ufffd]/.test(mem.get(key) || '');
+      });
+    },
+    previewEncodingRepair: async function () {
+      if (repairActive) throw new Error('Onarım önizlemesi zaten açık. Önce kapatın.');
+      if ((typeof cart !== 'undefined' && cart && cart.length) || (typeof paying !== 'undefined' && paying)) {
+        throw new Error('Önce açık satışı tamamlayın veya sepeti beklemeye alın.');
+      }
+      repairActive = true;
+      try {
+        if (!await drain(15000)) throw new Error('Bekleyen kayıtlar henüz diske yazılmadı. Tekrar deneyin.');
+        return await invoke('encoding_repair_preview');
+      } catch (error) {
+        await invoke('encoding_repair_cancel');
+        repairActive = false;
+        throw error;
+      }
+    },
+    applyEncodingRepair: function (token) {
+      if (!repairActive) return Promise.reject(new Error('Önce onarım önizlemesini açın.'));
+      // Yazma kilidi başarılı işlemden sonra da sayfa yenilenene kadar açık kalır.
+      return invoke('encoding_repair_apply', { token: String(token || '') });
+    },
+    cancelEncodingRepair: async function () {
+      await invoke('encoding_repair_cancel');
+      repairActive = false;
+    }
   });
 
   // ── Kapanış ve yenileme: önce kuyruk boşalsın ────────────────────
@@ -147,6 +181,7 @@
     invoke('flush_done');
   };
   window.__kocReload = async function () {
+    if (repairActive) return;
     await drain(7000);
     location.reload();
   };
@@ -157,7 +192,7 @@
     if (k === 'F5' || ((e.ctrlKey || e.metaKey) && (k === 'r' || k === 'R'))) {
       e.preventDefault();
       e.stopPropagation();
-      if (e.shiftKey || e.ctrlKey) window.__kocReload();
+      if (!repairActive && (e.shiftKey || e.ctrlKey)) window.__kocReload();
     }
   }, true);
 

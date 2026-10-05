@@ -1,4 +1,4 @@
-# Koç Market — Tauri Sürümü (2.0.2)
+# Koç Market — Tauri Sürümü (2.0.3)
 
 Electron uygulamasının Tauri'ye taşınmış hâli. **Electron dosyalarına dokunulmadı**;
 Tauri her şeyiyle bu `tauri/` klasöründe yaşar. `index.html` ana klasörde tek kaynak
@@ -123,3 +123,22 @@ satışların korunmasını doğrular. Ayrıca 2 MB veriyle UTF-8 bildiriminin b
 kaldığı sınanır. Rust bulunmazsa yeniden açılış testi atlanır; `test:rust` Rust
 gerektirir. Yayın iş akışı Rust kurar ve iki kontrolü de paket üretiminden önce
 çalıştırır.
+
+## 2.0.3 — Kaydedilmiş bozuk adları onarma
+
+Markette güncellemeden sonra açık satışı tamamlayın veya beklemeye alın.
+Sağ alttaki **Türkçe Adları Onar** düğmesine basın. Güncel deponun tamamı
+`backups/turkce-onarim-oncesi-*.json` dosyasına yedeklenir ve yeniden okunarak
+doğrulanır. Önizlemedeki adlar doğruysa **Onar ve Yenile** düğmesine basın.
+
+Eski bir yedek geri yüklenmez. Dört canlı JSON veri alanındaki metinler ve kendi
+kurtarma kopyaları onarılır; barkod/kimlik alanları, sayılar, nesne anahtarları ve
+kayıt sayıları korunur. Arşiv yedekler değiştirilmez. Eksik veya kayıplı kodlama
+nedeniyle kesin çözülemeyen alanlar olduğu gibi kalır; sayısı önizlemede gösterilir.
+Önizleme sırasında yazma kilitlenir; tüm snapshot değişmişse onarım reddedilir.
+SQLite işlemi tek transaction, JSON motoru atomik dosya yazımı kullanır.
+
+Yayın kontrolü ayrıca `npm run hazirla` ve
+`cargo test --manifest-path src-tauri/Cargo.toml --locked --lib` çalıştırır;
+algoritma, iki depolama motoru, yedek doğrulama, işlem geri alma, yazma kuyruğu
+ve onay ekranı sınanır. Canlı market verisi bu testlerde kullanılmaz.

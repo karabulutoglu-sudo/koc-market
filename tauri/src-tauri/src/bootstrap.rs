@@ -3,6 +3,7 @@
 use std::fmt::Write;
 
 const BRIDGE_JS: &str = include_str!("bridge.js");
+const REPAIR_UI_JS: &str = include_str!("repair-ui.js");
 const UTF8_META: &str = "<meta charset=\"UTF-8\">";
 pub const HTML_CONTENT_TYPE: &str = "text/html; charset=utf-8";
 
@@ -27,8 +28,9 @@ pub fn build_boot_script(boot_json: &str) -> String {
     // JSON string'indeki </script> ve <!-- HTML ayrıştırıcısını etkileyemez.
     let boot_json = ascii_js(&boot_json.replace('<', "\\u003c"));
     let bridge = ascii_js(BRIDGE_JS);
+    let repair_ui = ascii_js(REPAIR_UI_JS);
     format!(
-        "<script>window.__KOC_BOOT__={boot_json};</script>\n<script>{bridge}</script>\n"
+        "<script>window.__KOC_BOOT__={boot_json};</script>\n<script>{bridge}</script>\n<script>{repair_ui}</script>\n"
     )
 }
 
@@ -76,8 +78,8 @@ mod tests {
         assert!(script.is_ascii());
         assert!(script.contains(r#""engine":"kapal\u0131""#));
         assert!(script.contains(r#""\u00fcr\u00fcn":"\u0130\u00c7\u0130M \u003c/script>\u003cscript> \u003c!-- \ud83d\ude00""#));
-        assert_eq!(script.matches("<script>").count(), 2);
-        assert_eq!(script.matches("</script>").count(), 2);
+        assert_eq!(script.matches("<script>").count(), 3);
+        assert_eq!(script.matches("</script>").count(), 3);
         assert!(script.contains("window.kocStore = Object.freeze(kocStore)"));
     }
 

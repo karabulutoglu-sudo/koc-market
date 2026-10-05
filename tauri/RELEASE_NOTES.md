@@ -1,6 +1,8 @@
-# Koç Market 2.0.2 — Türkçe Karakter Düzeltmesi
+# Koç Market 2.0.3 — Yedekli Türkçe Ad Onarımı
 
-- Ürün ve satış adlarındaki Türkçe karakterlerin açılışta veya yenilemede bozulmasına neden olan veri aktarımı düzeltildi.
-- Sayfa açıkça UTF-8 olarak gönderilir; açılış verisi karakter kodlaması bildiriminden sonra yüklenir.
-- Açılış verisi ve köprü kodu kodlamadan etkilenmeyen ASCII kaçışlarıyla aktarılır.
-- Bu sürüm mevcut bozuk kayıtları otomatik değiştirmez. Bu kayıtların onarımı, tam yedek ve önizleme ile ayrıca yapılmalıdır.
+- Yeni “Türkçe Adları Onar” düğmesi, önceki sürümde bozulup kaydedilmiş ürün, satış, bekleyen satış ve cari metinlerini önizlemede gösterir.
+- Önizlemeden önce güncel verilerin tamamı ayrı bir dosyaya yedeklenir ve yedek okunarak doğrulanır. Onarım yalnızca “Onar ve Yenile” onayıyla uygulanır.
+- Barkodlar, kimlikler, fiyatlar, tutarlar ve kayıt sayıları korunur. Eski yedek geri yüklenmez; yeni satışlar mevcut verilerde kalır.
+- Onarım sırasında yazma ve yenileme engellenir. Açık sepet varsa önce satışın tamamlanması veya beklemeye alınması istenir.
+- Kesin çözülemeyen metinler değiştirilmez ve önizlemede sayısı belirtilir. Tekrarlanan onarım temiz metinleri değiştirmez.
+- 2.0.2'deki UTF-8 açılış düzeltmesi korunur; onarım ekranı da kodlamadan etkilenmeyen ASCII kaçışlarıyla aktarılır.

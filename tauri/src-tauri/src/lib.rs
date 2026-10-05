@@ -6,11 +6,12 @@
 
 mod store;
 mod bootstrap;
+mod encoding_repair;
 
 use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use store::{log_line, InitReport, Op, Store};
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
@@ -22,21 +23,86 @@ struct AppState {
     store: Mutex<Option<Store>>,
     report: Mutex<InitReport>,
     flush_started: AtomicBool,
+    encoding_repair: Mutex<Option<PendingEncodingRepair>>,
     #[cfg(not(debug_assertions))]
     pending_update: Mutex<Option<(tauri_plugin_updater::Update, Vec<u8>)>>,
 }
+
+struct PendingEncodingRepair {
+    snapshot: store::Kv,
+    plan: encoding_repair::RepairPlan,
+    backup: PathBuf,
+    token: String,
+}
+
+static REPAIR_NONCE: AtomicU64 = AtomicU64::new(0);
 
 // ── Komutlar (JS köprüsünün çağırdığı) ─────────────────────────────
 
 /// Sıralı yazma kuyruğundan gelen grup işlemi tek transaction'da uygula.
 #[tauri::command(async)]
 fn kv_apply(state: tauri::State<'_, AppState>, ops: Vec<Op>) -> Result<(), String> {
+    let repair = state.encoding_repair.lock().map_err(|_| "Onarım kilidi bozuk".to_string())?;
+    if repair.is_some() {
+        return Err("Onarım önizlemesi açık. Önce onarımı tamamlayın veya iptal edin.".into());
+    }
     let mut guard = state.store.lock().map_err(|_| "Depo kilidi bozuk".to_string())?;
     let st = guard.as_mut().ok_or("Depo hazır değil")?;
     st.apply(&ops).map_err(|e| {
         log_line(&st.dir, &format!("Yazma hatası ({} işlem): {e}", ops.len()));
         e
     })
+}
+
+/// Güncel veriyi yedekle; düzeltilecek metinleri yalnızca önizlemede göster.
+#[tauri::command(async)]
+fn encoding_repair_preview(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    let mut pending = state.encoding_repair.lock().map_err(|_| "Onarım kilidi bozuk".to_string())?;
+    *pending = None;
+    if state.flush_started.load(Ordering::SeqCst) {
+        return Err("Uygulama kapanıyor. Onarım için tekrar açın.".into());
+    }
+    let guard = state.store.lock().map_err(|_| "Depo kilidi bozuk".to_string())?;
+    let st = guard.as_ref().ok_or("Depo hazır değil")?;
+    let plan = encoding_repair::plan(&st.mem)?;
+    let backup = st.repair_backup()?;
+    let snapshot = st.mem.clone();
+    let token = format!("{}-{}", chrono::Utc::now().timestamp_micros(), REPAIR_NONCE.fetch_add(1, Ordering::SeqCst));
+    let mut preview = serde_json::to_value(&plan.preview).map_err(|e| e.to_string())?;
+    preview["token"] = json!(token);
+    preview["backup_path"] = json!(backup.display().to_string());
+    log_line(&st.dir, &format!("Türkçe onarım önizlemesi: {} metin, {} incelenecek; tam yedek: {}", plan.preview.changes, plan.preview.unresolved, backup.display()));
+    *pending = Some(PendingEncodingRepair { snapshot, plan, backup, token });
+    Ok(preview)
+}
+
+/// İstemci yeni veri gönderemez; sadece gösterilmiş, yedeklenmiş plana onay verir.
+#[tauri::command(async)]
+fn encoding_repair_apply(state: tauri::State<'_, AppState>, token: String) -> Result<Value, String> {
+    let mut pending = state.encoding_repair.lock().map_err(|_| "Onarım kilidi bozuk".to_string())?;
+    if state.flush_started.load(Ordering::SeqCst) {
+        return Err("Uygulama kapanıyor. Onarım uygulanmadı.".into());
+    }
+    let shown = pending.as_ref().ok_or("Önce onarım önizlemesini açın.")?;
+    if token != shown.token {
+        return Err("Önizleme artık geçerli değil. Yeniden önizleme oluşturun.".into());
+    }
+    if shown.plan.after.is_empty() {
+        return Err("Onarılacak metin bulunamadı.".into());
+    }
+    let mut guard = state.store.lock().map_err(|_| "Depo kilidi bozuk".to_string())?;
+    let st = guard.as_mut().ok_or("Depo hazır değil")?;
+    st.apply_repair(&shown.snapshot, &shown.plan.after, &shown.backup)?;
+    let result = json!({ "changes": shown.plan.preview.changes, "backup_path": shown.backup.display().to_string(), "unresolved": shown.plan.preview.unresolved });
+    log_line(&st.dir, &format!("Türkçe onarım tamamlandı: {} metin; yeni satışlar ve sayısal alanlar korundu.", shown.plan.preview.changes));
+    *pending = None;
+    Ok(result)
+}
+
+#[tauri::command]
+fn encoding_repair_cancel(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    *state.encoding_repair.lock().map_err(|_| "Onarım kilidi bozuk".to_string())? = None;
+    Ok(())
 }
 
 /// Tanı bilgisi (Ayarlar ekranı veya konsol için): motor, klasör, geçiş.
@@ -291,10 +357,11 @@ pub fn run() {
             store: Mutex::new(None),
             report: Mutex::new(InitReport::default()),
             flush_started: AtomicBool::new(false),
+            encoding_repair: Mutex::new(None),
             #[cfg(not(debug_assertions))]
             pending_update: Mutex::new(None),
         })
-        .invoke_handler(tauri::generate_handler![kv_apply, kv_info, file_save, file_open, flush_done, electron_ack, test_log, test_close])
+        .invoke_handler(tauri::generate_handler![kv_apply, kv_info, file_save, file_open, flush_done, electron_ack, encoding_repair_preview, encoding_repair_apply, encoding_repair_cancel, test_log, test_close])
         .setup(|app| {
             let handle = app.handle().clone();
             let dir = std::env::var("KOC_DATA_DIR").map(PathBuf::from)

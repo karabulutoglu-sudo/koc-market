@@ -24,7 +24,7 @@ function bridgeContext(persisted) {
     }
   };
   const context = vm.createContext({
-    window, document: { body: null, addEventListener() {} },
+    window, document: { readyState: 'loading', body: null, addEventListener() {} },
     setTimeout() {}, console
   });
   return { context, window };
@@ -106,8 +106,8 @@ test('gerçek Rust açılış çıktısı Windows-1252 ile okunsa bile 5 açıl�
       assert.ok(utf8.indexOf('<meta charset="UTF-8">') < utf8.indexOf('window.__KOC_BOOT__'));
       // En kötü durumda bile açılış verisi ve köprü bozulamaz.
       const decoded = new TextDecoder('windows-1252').decode(generated.stdout);
-      const scripts = [...decoded.matchAll(/<script>([\s\S]*?)<\/script>/g)].slice(0, 2);
-      assert.equal(scripts.length, 2);
+      const scripts = [...decoded.matchAll(/<script>([\s\S]*?)<\/script>/g)].slice(0, 3);
+      assert.equal(scripts.length, 3);
       const { context, window } = bridgeContext(persisted);
       for (const script of scripts) {
         assert.match(script[1], /^[\x00-\x7f]*$/);

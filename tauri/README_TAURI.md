@@ -1,4 +1,4 @@
-# Koç Market — Tauri Sürümü (2.0.3)
+# Koç Market — Tauri Sürümü (2.0.4)
 
 Electron uygulamasının Tauri'ye taşınmış hâli. **Electron dosyalarına dokunulmadı**;
 Tauri her şeyiyle bu `tauri/` klasöründe yaşar. `index.html` ana klasörde tek kaynak
@@ -142,3 +142,16 @@ Yayın kontrolü ayrıca `npm run hazirla` ve
 `cargo test --manifest-path src-tauri/Cargo.toml --locked --lib` çalıştırır;
 algoritma, iki depolama motoru, yedek doğrulama, işlem geri alma, yazma kuyruğu
 ve onay ekranı sınanır. Canlı market verisi bu testlerde kullanılmaz.
+
+## 2.0.4 — Görünmeyen karakterli bozulmaları çözme
+
+2.0.3 yalnızca Windows-1252'nin görünür karşılıklarını tanıyordu. Bazı verilerde
+aynı katmanda Latin-1'in U+0080–U+009F kontrol karakterleri de bulunuyor. Yeni
+onarım her iki gösterimi de aynı byte'a geri çevirir; yalnız geçerli UTF-8 dizileri
+çözülür. Sonuçta kalan kontrol karakterleri veya kayıplı U+FFFD alanları reddedilir.
+
+Gerçek başarısız yedeğin ayrı kopyasında eski algoritmanın sıfır düzeltme sonucu
+yeniden üretildi; yeni algoritmayla tüm çözülemeyen alanlar geri açıldı. Kaydetme,
+yeniden açılış, ikinci onarımın değişiklik yapmaması ve bütün sayısal/kimlik
+alanlarının korunması doğrulandı. Kullanıcı verisi kaynak koduna veya yayın
+paketine eklenmez; kalıcı regresyon testinde anonim bir karakter örüntüsü kullanılır.

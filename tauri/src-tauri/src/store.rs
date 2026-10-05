@@ -1004,4 +1004,78 @@ mod repair_tests {
             assert_eq!(store.mem, expected);
         }
     }
+
+    fn migration_unicode_fixture() -> Kv {
+        Kv::from([
+            ("koc-prods".into(), json!([
+                {"b":"8691234567890","n":"İıĞğŞşÜüÖöÇç ÇİKOLATA 😀","p":40.5},
+                {"b":"8691234567891","n":"Müller € Äpfel \"alıntı\" \\u0130","p":12}
+            ]).to_string()),
+            ("koc-sales".into(), json!([{"id":"sale-1","items":[{"b":"8691234567890","n":"İÇİM SÜT","q":2}],"total":81}]).to_string()),
+            ("koc-cari-state".into(), json!({"name":"Özer Koç","note":"Şişli, İstanbul","balance":81}).to_string()),
+            ("koc-held".into(), "[]".into()),
+            ("ayar-İşletme".into(), "Koç Market\nİstanbul 🧑🏽‍💻".into()),
+        ])
+    }
+
+    #[test]
+    fn electron_sqlite_migration_preserves_unicode_including_committed_wal() {
+        let source = TestDir::new();
+        let destination = TestDir::new();
+        let expected = migration_unicode_fixture();
+        let source_db = source.0.join("kocmarket.db");
+        let conn = Connection::open(&source_db).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE kv(key TEXT PRIMARY KEY,value TEXT,updated_at TEXT);").unwrap();
+        for (key, value) in &expected {
+            conn.execute("INSERT INTO kv VALUES (?1,?2,'test')", params![key,value]).unwrap();
+        }
+        // Keep Electron's connection open so committed rows remain in WAL.
+        let source_files: Vec<(PathBuf, Vec<u8>)> = ["", "-wal", "-shm"].iter().map(|suffix| {
+            let path = PathBuf::from(format!("{}{suffix}", source_db.display()));
+            let bytes = fs::read(&path).unwrap();
+            (path, bytes)
+        }).collect();
+        let (mut store, report) = Store::init(destination.0.clone(), &[source.0.clone()]).unwrap();
+        assert_eq!(report.migrated_keys, expected.len());
+        assert_preserved(&store, &expected);
+        let backup = latest_backup(&destination.0.join("backups"), "electron-gecis-yedek-").unwrap();
+        assert_eq!(read_json_kv(&backup).unwrap(), expected);
+        for (path, bytes) in source_files { assert_eq!(fs::read(path).unwrap(), bytes); }
+        store.shutdown();
+        drop(conn);
+    }
+
+    #[test]
+    fn electron_json_migration_preserves_all_unicode_and_source_bytes() {
+        let source = TestDir::new();
+        let destination = TestDir::new();
+        let expected = migration_unicode_fixture();
+        let path = source.0.join("koc-data.json");
+        let bytes = serde_json::to_vec(&expected).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let (mut store, report) = Store::init(destination.0.clone(), &[source.0.clone()]).unwrap();
+        assert_eq!(report.migrated_keys, expected.len());
+        assert_preserved(&store, &expected);
+        assert_eq!(fs::read(path).unwrap(), bytes);
+        store.shutdown();
+    }
+
+    #[test]
+    fn reopening_after_migration_keeps_tauri_new_sales_and_updated_names() {
+        let source = TestDir::new();
+        let destination = TestDir::new();
+        let original = migration_unicode_fixture();
+        fs::write(source.0.join("koc-data.json"), serde_json::to_vec(&original).unwrap()).unwrap();
+        let (mut store, _) = Store::init(destination.0.clone(), &[source.0.clone()]).unwrap();
+        let mut current = original.clone();
+        current.insert("koc-prods".into(), json!([{"b":"8691234567890","n":"YENİ ÜRÜN ŞÖLEN","p":45}]).to_string());
+        current.insert("koc-sales".into(), json!([{"id":"sale-1","total":81},{"id":"sale-2","name":"İÇİM SÜT","total":90}]).to_string());
+        let ops: Vec<Op> = current.iter().map(|(key,val)| Op {key:key.clone(),op:"set".into(),val:Some(val.clone())}).collect();
+        store.apply(&ops).unwrap();
+        store.shutdown();
+        let (mut reopened, report) = Store::init(destination.0.clone(), &[source.0.clone()]).unwrap();
+        assert!(report.migrated_from.is_none());
+        assert_preserved(&reopened, &current);
+        reopened.shutdown();
+    }
 }

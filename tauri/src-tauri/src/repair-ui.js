@@ -127,7 +127,9 @@
       }
       details.appendChild(element('p', 'Satışlar korunur; fiyatlar, barkodlar, miktarlar ve tutarlar değişmez. Yalnızca doğrulanmış bozuk metinler düzeltilir.'));
       stage = 'ready';
-      setStatus(preview.changes ? 'Önizlemeyi kontrol edin. Onarımı başlatmak için “Onar ve Yenile” düğmesine basın.' : 'Onarılacak kayıt bulunamadı.', false, false);
+      var previewStatus = preview.changes ? 'Önizlemeyi kontrol edin. Onarımı başlatmak için “Onar ve Yenile” düğmesine basın.' :
+        (preview.unresolved ? 'Bozuk olabilecek ' + preview.unresolved + ' metin bulundu; mevcut yöntemle güvenli biçimde onarılamadı. Sorun devam ediyor. Hiçbir kayıt değiştirilmedi; yeni bir onarım yöntemi gerekiyor.' : 'Onarılacak kayıt bulunamadı.');
+      setStatus(previewStatus, false, !preview.changes && preview.unresolved > 0);
       setButtons();
       cancelButton.focus();
     }

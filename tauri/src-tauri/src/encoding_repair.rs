@@ -1,4 +1,4 @@
-//! Plans a reversible repair of UTF-8 text that was read as Windows-1252.
+//! Plans a reversible repair of UTF-8 read as Windows-1252 or Latin-1.
 //!
 //! Planning is read-only. Only string values in the four live data roots can
 //! change, including their active shadow/emergency recovery copies. Archived
@@ -227,8 +227,7 @@ fn decode_pass(source: &str) -> DecodePass {
         };
         let continuation =
             cp1252_byte(*next).is_some_and(|byte| (0x80..=0xbf).contains(&byte));
-        let invalid_c1 = ('\u{80}'..='\u{9f}').contains(next) && cp1252_byte(*next).is_none();
-        if !continuation && !invalid_c1 && *next != '\u{fffd}' {
+        if !continuation && *next != '\u{fffd}' {
             out.push(ch);
             index += 1;
             continue;
@@ -252,12 +251,12 @@ fn decode_pass(source: &str) -> DecodePass {
         let Ok(decoded) = std::str::from_utf8(&bytes[..width]) else {
             return DecodePass::Invalid;
         };
-        // Undefined CP1252 controls may appear in an intermediate layer (for
-        // example double-encoded ā), but a final C1 control is rejected above.
+        // CP1252's undefined controls and Latin-1's C1 aliases may appear in
+        // intermediate layers. Final C1 output is rejected by repair_text.
         if decoded.chars().any(|value| {
             value == '\u{fffd}'
                 || (value.is_control()
-                    && !matches!(value, '\u{81}' | '\u{8d}' | '\u{8f}' | '\u{90}' | '\u{9d}'))
+                    && !('\u{80}'..='\u{9f}').contains(&value))
         }) {
             return DecodePass::Invalid;
         }
@@ -280,8 +279,10 @@ fn is_mojibake_lead(byte: u8) -> bool {
     matches!(byte, 0xc2..=0xc7 | 0xcb | 0xe2 | 0xef | 0xf0..=0xf4)
 }
 
-/// Exact inverse of the browser's Windows-1252 decoder. Undefined C1 bytes
-/// 81, 8D, 8F, 90 and 9D map to the corresponding Unicode control values.
+/// Reversible byte inverse for Windows-1252 glyphs and Latin-1 aliases.
+/// Both „ (CP1252) and U+0084 (Latin-1), for example, identify byte 84
+/// unambiguously. This also supports alternating encodings across layers;
+/// raw C1 controls are allowed only in intermediate, never final, text.
 fn cp1252_byte(ch: char) -> Option<u8> {
     match ch {
         '\u{20ac}' => Some(0x80),
@@ -316,7 +317,7 @@ fn cp1252_byte(ch: char) -> Option<u8> {
         '\u{9d}' => Some(0x9d),
         '\u{17e}' => Some(0x9e),
         '\u{178}' => Some(0x9f),
-        '\u{0}'..='\u{7f}' | '\u{a0}'..='\u{ff}' => Some(ch as u8),
+        '\u{0}'..='\u{ff}' => Some(ch as u8),
         _ => None,
     }
 }
@@ -325,6 +326,74 @@ fn cp1252_byte(ch: char) -> Option<u8> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn corrupt_latin1(source: &str) -> String {
+        source.bytes().map(char::from).collect()
+    }
+
+    #[test]
+    fn latin1_c1_alias_previously_rejected_by_203_is_reversible() {
+        // UTF-8 İ -> Latin-1 Ä° -> Latin-1 Ã<U+0084>Â°.
+        // 2.0.3 rejected U+0084, even though its byte value is unambiguous.
+        assert_eq!(corrupt_latin1(&corrupt_latin1("İ")), "Ã\u{84}Â°");
+        assert_eq!(repair_text("Ã\u{84}Â°"), TextRepair::Changed { text: "İ".into(), layers: 2 });
+        assert_eq!(repair_text("Ã\u{80}"), TextRepair::Changed { text: "À".into(), layers: 1 });
+    }
+
+    #[test]
+    fn mixed_visible_glyphs_and_raw_c1_within_one_layer_are_repaired() {
+        // Anonymized byte pattern from the real failed preview: Windows-1252
+        // glyphs and raw Latin-1 controls occur together in the same layer.
+        let source = "TEST Ãƒâ€\u{9e}Ã‚Â°Ãƒâ€¦Ã‚Â\u{9e}";
+        let before = one_root(json!([{"b":"test-barcode","n":source,"p":45}]));
+        let result = plan(&before).unwrap();
+        assert_eq!(result.preview.changes, 1);
+        assert_eq!(result.preview.unresolved, 0);
+        assert_eq!(result.preview.samples[0].layers, 3);
+        let repaired: Value = serde_json::from_str(&result.after["koc-prods"]).unwrap();
+        assert_eq!(repaired, json!([{"b":"test-barcode","n":"TEST İŞ","p":45}]));
+    }
+
+    #[test]
+    fn all_alternating_windows1252_latin1_layers_roundtrip() {
+        let clean = "ÇİĞ ŞÖLEN ÜLKER ıöüçğş € 😀";
+        for depth in 1..=MAX_LAYERS {
+            for mask in 0..(1usize << depth) {
+                let mut damaged = clean.to_owned();
+                for layer in 0..depth {
+                    damaged = if mask & (1 << layer) == 0 {
+                        corrupt(&damaged, 1)
+                    } else { corrupt_latin1(&damaged) };
+                }
+                assert_eq!(repair_text(&damaged), TextRepair::Changed {
+                    text: clean.into(), layers: depth,
+                }, "depth={depth} codec_mask={mask}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_latin1_c1_alias_is_allowed_intermediately_but_not_as_final_text() {
+        for byte in 0x80u8..=0x9f {
+            let clean = char::from_u32(0x100 + (byte - 0x80) as u32).unwrap().to_string();
+            let damaged = corrupt_latin1(&corrupt_latin1(&clean));
+            assert_eq!(repair_text(&damaged), TextRepair::Changed { text: clean, layers: 2 });
+            let control = char::from(byte).to_string();
+            for damaged in [corrupt(&control, 1), corrupt_latin1(&control)] {
+                assert_eq!(repair_text(&damaged), TextRepair::Unresolved, "C1 byte {byte:x}");
+            }
+        }
+    }
+
+    #[test]
+    fn latin1_repair_keeps_clean_text_and_rejects_lossy_fields() {
+        let clean_prefix = "Müller ÜLKER İÇECEK 😀 ";
+        let damaged = corrupt_latin1(&corrupt("ÇİKOLATA ŞEKER", 1));
+        assert_eq!(repair_text(&format!("{clean_prefix}{damaged}")), TextRepair::Changed {
+            text: format!("{clean_prefix}ÇİKOLATA ŞEKER"), layers: 2,
+        });
+        assert_eq!(repair_text(&format!("{damaged} �")), TextRepair::Unresolved);
+    }
 
     fn corrupt(source: &str, layers: usize) -> String {
         const C1: [char; 32] = [
@@ -420,7 +489,7 @@ mod tests {
     #[test]
     fn loss_invalid_utf8_and_partial_candidates_are_unresolved() {
         for source in [
-            "ÜLKER �", "Ã�LKER", "ï¿½", "â€", "â€X", "Ã\u{80}",
+            "ÜLKER �", "Ã�LKER", "ï¿½", "â€", "â€X",
             "ðŸ€", "Â\u{81}", "ÃœLKER â€X", "ÄŸ doğru �",
         ] {
             assert_eq!(repair_text(source), TextRepair::Unresolved, "{source:?}");

@@ -307,6 +307,22 @@ test('zero-change preview shows backup but cannot apply', async () => {
   assert.deepEqual(h.calls.apply, []);
 });
 
+test('zero changes with unresolved damage explains repair limitation and never claims clean data', async () => {
+  const h = harness({ preview: () => ({ ...h.defaultPreview, changes: 0, product_changes: 0, sale_changes: 0, unresolved: 32265, token: null, samples: [] }) });
+  h.button('Türkçe Adları Onar').click();
+  await tick();
+  const text = h.byId('koc-encoding-dialog').textContent;
+  assert.ok(text.includes('32265 metin bulundu'));
+  assert.ok(text.includes('güvenli biçimde onarılamadı'));
+  assert.ok(text.includes('Sorun devam ediyor. Hiçbir kayıt değiştirilmedi'));
+  assert.ok(text.includes(h.defaultPreview.backup_path));
+  assert.equal(text.includes('Onarılacak kayıt bulunamadı.'), false);
+  assert.equal(h.button('Onar ve Yenile').disabled, true);
+  h.button('Onar ve Yenile').click();
+  assert.deepEqual(h.calls.apply, []);
+  assert.equal(h.calls.reload, 0);
+});
+
 test('reload failure after success cannot cancel back into stale application data', async () => {
   let attempts = 0;
   const h = harness({ reload: () => { if (++attempts === 1) throw new Error('Yenileme denenmeli'); } });

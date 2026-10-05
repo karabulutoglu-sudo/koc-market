@@ -1,4 +1,4 @@
-# Koç Market — Tauri Sürümü (2.0.0)
+# Koç Market — Tauri Sürümü (2.0.2)
 
 Electron uygulamasının Tauri'ye taşınmış hâli. **Electron dosyalarına dokunulmadı**;
 Tauri her şeyiyle bu `tauri/` klasöründe yaşar. `index.html` ana klasörde tek kaynak
@@ -94,3 +94,32 @@ aynı adlı masaüstü kısayolunu da silebilir — silerse Tauri kurulumunu tek
 
 Rust + Visual Studio Build Tools kuruluysa: `cd tauri`, `npm ci`, `npm run dev`.
 Geliştirme modunda güncelleyici çalışmaz.
+
+## 2.0.2 — Türkçe karakter düzeltmesi
+
+Açılış verisi eskiden `<head>` etiketinin hemen arkasına, UTF-8 bildiriminden
+önce ekleniyordu. Büyük veri bu bildirimi ilk 1024 bayttan dışarı itebiliyordu.
+`src-tauri/src/bootstrap.rs` artık veriyi UTF-8 bildiriminden sonra ekler;
+`lib.rs` HTML yanıtına `text/html; charset=utf-8` başlığını koyar. Açılış verisinin
+tamamı ve köprü kodu ASCII JS kaçışlarıyla aktarılır. Ürünler, satışlar, cariler,
+raporlar, dosya yolları ve emoji bu aktarım sırasında aynen korunur.
+
+Bu düzeltme kaydedilmiş bozuk metinleri otomatik onarmaz. Önce düzeltilmiş sürüm
+markette kurulup kontrol edilmeli; ardından güncel veri yedeklenmeli, onarım
+önizlemesi incelenmeli ve yalnız onaylanan değişiklikler uygulanmalıdır. Temiz
+eski yedeği geri yüklemek yeni satışları kaybettirebileceği için onarımın yerine
+geçmez.
+
+Kontroller (`tauri/` içinde):
+
+```powershell
+npm test
+npm run test:rust
+```
+
+Rust kuruluysa test, gerçek açılış HTML'ini üretir; Windows-1252 ile okuyup köprüyü
+çalıştırır ve beş açılış/kayıt turunda Türkçe adları, barkodları, tutarları ve yeni
+satışların korunmasını doğrular. Ayrıca 2 MB veriyle UTF-8 bildiriminin başta
+kaldığı sınanır. Rust bulunmazsa yeniden açılış testi atlanır; `test:rust` Rust
+gerektirir. Yayın iş akışı Rust kurar ve iki kontrolü de paket üretiminden önce
+çalıştırır.

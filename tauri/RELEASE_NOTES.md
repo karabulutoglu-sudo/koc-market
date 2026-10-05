@@ -1,10 +1,6 @@
-# Koç Market 2.0.1 — Yeni Altyapı (Tauri)
+# Koç Market 2.0.2 — Türkçe Karakter Düzeltmesi
 
-- Uygulama yeni, çok daha hafif bir altyapıya taşındı (kurulum ~80 MB → ~4 MB).
-- Daha az bellek kullanır, daha hızlı açılır.
-- Tüm ürün, satış, cari ve ayar verileriniz ilk açılışta otomatik taşınır.
-- Eski verileriniz SİLİNMEZ, yedek olarak yerinde kalır.
-- Excel ve PDF özellikleri artık internet olmadan da çalışır.
-- Pencere başlığında sürüm yazar ("Koç Market 2.0.1") — yeni programı bir bakışta tanıyın.
-- Eski program yanlışlıkla açılıp kullanılırsa yeni program açılışta uyarır.
-- Kurulum sırasında bir kerelik kurulum ekranı görünecek: "İleri" ve "Kur" demeniz yeterli.
+- Ürün ve satış adlarındaki Türkçe karakterlerin açılışta veya yenilemede bozulmasına neden olan veri aktarımı düzeltildi.
+- Sayfa açıkça UTF-8 olarak gönderilir; açılış verisi karakter kodlaması bildiriminden sonra yüklenir.
+- Açılış verisi ve köprü kodu kodlamadan etkilenmeyen ASCII kaçışlarıyla aktarılır.
+- Bu sürüm mevcut bozuk kayıtları otomatik değiştirmez. Bu kayıtların onarımı, tam yedek ve önizleme ile ayrıca yapılmalıdır.

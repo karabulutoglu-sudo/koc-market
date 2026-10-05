@@ -39,6 +39,14 @@ jobs:
         working-directory: tauri
         run: npm ci
 
+      - name: Türkçe karakter aktarımını ve yeniden açılışı doğrula
+        working-directory: tauri
+        run: |
+          npm test
+          if ($LASTEXITCODE -ne 0) { throw 'Açılış aktarım testleri başarısız.' }
+          npm run test:rust
+          if ($LASTEXITCODE -ne 0) { throw 'Rust açılış testleri başarısız.' }
+
       - name: Sürüm ve güncelleme notlarını doğrula
         id: meta
         run: |

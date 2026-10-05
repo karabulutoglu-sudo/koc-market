@@ -1,6 +1,6 @@
 [package]
 name = "koc-market"
-version = "2.0.1"
+version = "2.0.2"
 description = "Koç Market - Satış Sistemi (Tauri masaüstü uygulaması)"
 authors = ["Koç Market"]
 edition = "2021"

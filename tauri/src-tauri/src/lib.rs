@@ -5,6 +5,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 mod store;
+mod bootstrap;
 
 use serde_json::{json, Value};
 use std::borrow::Cow;
@@ -16,8 +17,6 @@ use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, Wind
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 #[cfg(not(debug_assertions))]
 use tauri_plugin_dialog::MessageDialogButtons;
-
-const BRIDGE_JS: &str = include_str!("bridge.js");
 
 struct AppState {
     store: Mutex<Option<Store>>,
@@ -202,29 +201,11 @@ fn build_boot_script(app: &AppHandle) -> String {
     let state = app.state::<AppState>();
     let guard = state.store.lock().unwrap();
     let report = state.report.lock().unwrap().clone();
-    let (data, engine) = match guard.as_ref() {
-        Some(st) => (serde_json::to_string(&st.mem).unwrap_or_else(|_| "{}".into()), st.engine()),
-        None => ("{}".into(), "kapalı"),
+    let boot = match guard.as_ref() {
+        Some(st) => json!({ "engine": st.engine(), "report": report, "data": &st.mem }),
+        None => json!({ "engine": "kapalı", "report": report, "data": {} }),
     };
-    // '<' karakteri JSON'da yalnızca string içinde geçer → < güvenli.
-    let data = data.replace('<', "\\u003c");
-    let report = serde_json::to_string(&report).unwrap_or_else(|_| "{}".into()).replace('<', "\\u003c");
-    format!(
-        "<script>window.__KOC_BOOT__={{\"engine\":\"{engine}\",\"report\":{report},\"data\":{data}}};</script>\n<script>{BRIDGE_JS}</script>\n"
-    )
-}
-
-fn inject_into_html(html: &[u8], boot: &str) -> Vec<u8> {
-    let s = String::from_utf8_lossy(html);
-    let lower = s.to_ascii_lowercase();
-    // <head ...> etiketinin hemen ardına (index.html'in tüm scriptlerinden önce)
-    if let Some(pos) = lower.find("<head") {
-        if let Some(end) = lower[pos..].find('>') {
-            let at = pos + end + 1;
-            return format!("{}\n{}{}", &s[..at], boot, &s[at..]).into_bytes();
-        }
-    }
-    format!("{boot}{s}").into_bytes()
+    bootstrap::build_boot_script(&boot.to_string())
 }
 
 // ── Electron veri klasörü adayları ─────────────────────────────────
@@ -359,8 +340,9 @@ pub fn run() {
                     let path = req.uri().path();
                     if path == "/" || path == "/index.html" {
                         let boot = build_boot_script(&h2);
-                        let body = inject_into_html(resp.body(), &boot);
+                        let body = bootstrap::inject_into_html(resp.body(), &boot);
                         *resp.body_mut() = Cow::Owned(body);
+                        resp.headers_mut().insert("Content-Type", tauri::http::HeaderValue::from_static(bootstrap::HTML_CONTENT_TYPE));
                         resp.headers_mut().insert("Cache-Control", tauri::http::HeaderValue::from_static("no-store"));
                     }
                 })

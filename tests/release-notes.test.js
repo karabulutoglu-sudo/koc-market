@@ -42,3 +42,13 @@ test('Tauri yayını kök JavaScript ile paketlenmiş PDF ve CSP testlerine bağ
   assert.match(checks, /- name: Kökteki JavaScript testleri\r?\n\s+run: npm test/);
   assert.match(checks, /npm run hazirla[\s\S]*?npm run test:pdf\r?\n\s+if \(\$LASTEXITCODE -ne 0\) \{ throw/);
 });
+
+test('Tauri ön sürümü yayın hedefini denetler ve derlenen commit ile etiketlenir', () => {
+  const workflow = read('.github/workflows/tauri-build.yml');
+  const signing = workflow.indexOf('uses: tauri-apps/tauri-action@');
+  assert.ok(signing > 0);
+  assert.match(workflow.slice(0, signing), /node tauri\/scripts\/verify-release-target\.mjs \$version \$commit\r?\n\s+if \(\$LASTEXITCODE -ne 0\) \{ throw/);
+  assert.match(workflow.slice(signing), /tagName: \$\{\{ steps\.meta\.outputs\.tag \}\}/);
+  assert.match(workflow.slice(signing), /releaseCommitish: \$\{\{ steps\.meta\.outputs\.commit \}\}/);
+  assert.match(workflow.slice(signing), /^\s+prerelease: true\r?$/m);
+});

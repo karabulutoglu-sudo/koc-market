@@ -47,6 +47,7 @@ function deferred() {
 }
 
 const denied = { code:'permission_denied', message:'Yönetici yetkisi gerekli veya kayıt geçersiz.' };
+const dailyBackup = { 'koc-backups':'[{"reason":"Günlük otomatik yedek"}]', 'koc-last-auto-backup-date':'2026-11-27' };
 
 test('ordinary writes precede one acknowledged transaction for stock, receipt and credit', async () => {
   const oldWrite = deferred(), diskWrite = deferred();
@@ -198,6 +199,41 @@ test('failed native transaction keeps old data and blocks transitions until a su
   assert.equal(await s.window.__kocFlushAndClose(2), true);
   assert.equal(s.calls.at(-1).command, 'flush_done');
   assert.equal(s.calls.at(-1).args.generation, 2);
+});
+
+test('close waits for daily backup disk acknowledgement and can proceed if the backup fails', async () => {
+  const disk = deferred();
+  const s = setup(command => command === 'kv_apply' ? disk.promise : Promise.resolve());
+  const store = s.window.kocStore;
+  const backup = store.commit('backup-id', dailyBackup);
+  const close = s.window.__kocFlushAndClose(1);
+  await settle();
+  assert.deepEqual(s.calls.map(call => call.command), ['kv_apply']);
+
+  disk.reject('disk busy');
+  await assert.rejects(backup, /disk busy/);
+  assert.equal(await close, true);
+  assert.equal(store.read('koc-backups'), null);
+  assert.equal(store.read('koc-last-auto-backup-date'), null);
+  assert.match(s.warning.join('\n'), /Günlük yedek diske yazılamadı/);
+  assert.deepEqual(s.calls.map(call => call.command), ['kv_apply', 'flush_done']);
+});
+
+test('successful daily backup does not clear an independent sale failure', async () => {
+  let writes = 0;
+  const s = setup(async command => { if (command === 'kv_apply' && ++writes === 1) throw 'disk busy'; });
+  const store = s.window.kocStore;
+  const sale = {'koc-sales':'["sale-id"]'};
+  await assert.rejects(store.commit('sale-id', sale), /disk busy/);
+  await store.commit('backup-id', dailyBackup);
+  assert.equal(store.read('koc-last-auto-backup-date'), '2026-11-27');
+  assert.equal(store.read('koc-sales'), null);
+  assert.equal(await s.window.__kocFlushAndClose(1), false);
+  assert.equal(s.calls.at(-1).args.reason, 'write_failed');
+
+  await store.commit('sale-id', sale);
+  assert.equal(await s.window.__kocFlushAndClose(2), true);
+  assert.equal(store.read('koc-sales'), '["sale-id"]');
 });
 
 test('reload and close timeouts with a delayed write never tell native code the data is ready', async () => {

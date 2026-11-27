@@ -271,6 +271,8 @@
       check(sales.length === expectedOriginalSales, 'Kurulum profili beklenmedik satışla açıldı.');
       if (stage === 'old-decimal') {
         check(/"total":60\.0/.test(window.kocStore.read('koc-sales')), 'Eski fişin .0 biçimi prova için gerekli.');
+        check(window.kocStore.read('koc-last-auto-backup-date') === _todayKey(),
+          'Eski profil bugünün yedek işaretiyle açılmalı.');
       }
       await waitForDailyBackup(expectedOriginalSales);
       if (stage === 'clean') {

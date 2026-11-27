@@ -5280,35 +5280,33 @@ function renderHistory() {
 // ══════════════════════════════════════════════════════════
 
 // ── OTOMATİK YEDEK ──
-// Her save() çağrısından sonra çağrılır. Son 30 yedek tutulur (~eski otomatik silinir).
 // Yedekler 'koc-backups' anahtarında dizi olarak saklanır.
 const MAX_BACKUPS = 10;  // v13: 30'dan 10'a düşürüldü - localStorage tasarrufu için
 
+function backupSnapshot(reason, timestamp = Date.now()) {
+  return {
+    ts: timestamp,
+    reason: reason || 'Otomatik',
+    products,
+    sales: sales || [],
+    heldSales: heldSales || [],
+    cariState,
+    businessSettings,
+    categoryState,
+    operationalSettings,
+    userSettings,
+    count: products.length,
+    saleCount: (sales || []).length,
+    heldCount: (heldSales || []).length,
+    customerCount: (cariState.customers || []).length,
+    cariEntryCount: (cariState.entries || []).length,
+    v: 4
+  };
+}
+
 function makeBackup(reason) {
   try {
-    const backups = JSON.parse(LS.getItem('koc-backups') || '[]');
-    const snap = {
-      ts: Date.now(),
-      reason: reason || 'Otomatik',
-      products: JSON.parse(JSON.stringify(products)),
-      // V7.2: Satış geçmişi ve bekleyen satışlar da yedeğe dahil!
-      sales: JSON.parse(JSON.stringify(sales || [])),
-      heldSales: JSON.parse(JSON.stringify(heldSales || [])),
-      cariState: JSON.parse(JSON.stringify(cariState)),
-      businessSettings: JSON.parse(JSON.stringify(businessSettings)),
-      categoryState: JSON.parse(JSON.stringify(categoryState)),
-      operationalSettings: JSON.parse(JSON.stringify(operationalSettings)),
-      userSettings: JSON.parse(JSON.stringify(userSettings)),
-      count: products.length,
-      saleCount: (sales || []).length,
-      heldCount: (heldSales || []).length,
-      customerCount: (cariState.customers || []).length,
-      cariEntryCount: (cariState.entries || []).length,
-      v: 4  // şema sürümü
-    };
-    backups.unshift(snap);
-    // Fazlasını at
-    while (backups.length > MAX_BACKUPS) backups.pop();
+    const backups = [backupSnapshot(reason), ...readBackupList()].slice(0, MAX_BACKUPS);
     try {
       LS.setItem('koc-backups', JSON.stringify(backups));
     } catch(quotaErr) {
@@ -5333,22 +5331,53 @@ function makeBackup(reason) {
 const _originalSave = save;
 
 // Yerel tarih anahtarı (YYYY-MM-DD)
-function _todayKey() {
-  const d = new Date();
+function _todayKey(d = new Date()) {
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
   return d.getFullYear() + '-' + mm + '-' + dd;
 }
 
-// Bugün için otomatik yedek yoksa bir tane al; aynı gün tekrar çağrılırsa atla.
-function maybeDailyBackup() {
+// Gün işareti ancak aynı işlemdeki yedek diske yazılırsa ilerler.
+let dailyBackupInProgress = false;
+let confirmedDailyBackupDate;
+async function maybeDailyBackup() {
+  if (dailyBackupInProgress || dataCommitBusy) return false;
+  dailyBackupInProgress = true;
   try {
-    const today = _todayKey();
-    if (LS.getItem('koc-last-auto-backup-date') === today) return false;  // bugün zaten alınmış
-    makeBackup('Günlük otomatik yedek');
-    LS.setItem('koc-last-auto-backup-date', today);
+    const now = new Date();
+    const today = _todayKey(now);
+    if (confirmedDailyBackupDate === today) return false;
+    const previous = readBackupList();
+    const reason = 'Günlük otomatik yedek';
+    // Eski sürüm gün işaretini yedekten bağımsız kaydedebiliyordu.
+    if (LS.getItem('koc-last-auto-backup-date') === today && previous.some(backup =>
+      backup?.reason === reason && _todayKey(new Date(backup.ts)) === today)) {
+      confirmedDailyBackupDate = today;
+      return false;
+    }
+    const backups = [backupSnapshot(reason, now.getTime()), ...previous].slice(0, MAX_BACKUPS);
+    const store = window.kocStore || LS;
+    const id = newOperationId();
+    const entries = {
+      'koc-backups': JSON.stringify(backups),
+      'koc-last-auto-backup-date': today
+    };
+    try {
+      await store.commit(id, entries);
+    } catch (error) {
+      if (window.kocStore || error.name !== 'QuotaExceededError' || backups.length <= MAX_BACKUPS / 2) throw error;
+      entries['koc-backups'] = JSON.stringify(backups.slice(0, MAX_BACKUPS / 2));
+      await store.commit(id, entries);
+      flash('⚠ Yedek alanı dolduğu için eski yedekler kırpıldı', false);
+    }
+    confirmedDailyBackupDate = today;
     return true;
-  } catch(e) { console.warn('Günlük yedek kontrolü başarısız:', e); return false; }
+  } catch (error) {
+    console.warn('Günlük yedek alınamadı:', error);
+    return false;
+  } finally {
+    dailyBackupInProgress = false;
+  }
 }
 
 save = function() {

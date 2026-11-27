@@ -150,6 +150,8 @@
         return { key: key, op: val === null ? 'del' : 'set', val: val };
       });
       if (!ops.length) throw new Error('Kayıt grubu boş.');
+      var dailyBackup = ops.length === 2 && Object.hasOwn(entries, 'koc-backups') &&
+        Object.hasOwn(entries, 'koc-last-auto-backup-date');
       ops.push({ key: commitMarker, op: 'set', val: operationId });
       var operation = { id: operationId, promise: null };
       activeCommit = operation;
@@ -161,13 +163,18 @@
             setCachedValue(persisted, op.key, op.val);
             setCachedValue(mem, op.key, op.val);
           });
-          failedCommit = false;
-          showError(null);
+          // Günlük yedek bağımsız bir satış hatasını kapatmaz.
+          if (!dailyBackup) {
+            failedCommit = false;
+            showError(null);
+          }
           return { alreadyCommitted: false };
         } catch (cause) {
           var error = writeError(cause);
           if (error.code === 'permission_denied') {
             showDenied(error);
+          } else if (dailyBackup) {
+            toast('⚠ Günlük yedek diske yazılamadı. Sonraki kayıtta tekrar denenecek.\n' + error.message, '#b26a00');
           } else {
             failedCommit = true;
             showError('KAYIT HATASI: İşlem diske yazılamadı. Tekrar deneyin.\n' + error.message);

@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: tauri-release
+  cancel-in-progress: false
+
 jobs:
   build-windows:
     runs-on: windows-2025
@@ -26,6 +30,32 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: '22'
+
+      - name: Sürüm ve yayın hedefini doğrula
+        id: meta
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $conf = Get-Content -LiteralPath 'tauri/src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
+          $version = $conf.version
+          $tag = "tauri-v$version"
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -cne $tag) {
+            throw "Etiket ($env:GITHUB_REF_NAME) ile tauri.conf.json sürümü ($version) uyuşmuyor."
+          }
+          $notes = Get-Content -LiteralPath 'tauri/RELEASE_NOTES.md' -Raw
+          if ([string]::IsNullOrWhiteSpace($notes) -or $notes -notmatch [regex]::Escape($version)) {
+            throw "tauri/RELEASE_NOTES.md içinde sürüm $version bulunmalı."
+          }
+          $commit = git rev-parse --verify HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Derlenen commit belirlenemedi.' }
+          node tauri/scripts/verify-release-target.mjs $version $commit
+          if ($LASTEXITCODE -ne 0) { throw 'Yayın hedefi doğrulanamadı.' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "commit=$commit" >> $env:GITHUB_OUTPUT
+          "notes<<NOTLAR_SONU" >> $env:GITHUB_OUTPUT
+          $notes >> $env:GITHUB_OUTPUT
+          "NOTLAR_SONU" >> $env:GITHUB_OUTPUT
 
       - name: Rust kurulumu
         uses: dtolnay/rust-toolchain@stable
@@ -56,24 +86,6 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
           if ($LASTEXITCODE -ne 0) { throw 'Repair and backup tests failed.' }
 
-      - name: Sürüm ve güncelleme notlarını doğrula
-        id: meta
-        run: |
-          $conf = Get-Content -LiteralPath 'tauri/src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
-          $version = $conf.version
-          $tag = "${{ github.ref_name }}"
-          if ($tag -like 'tauri-v*' -and $tag -ne "tauri-v$version") {
-            throw "Etiket ($tag) ile tauri.conf.json sürümü ($version) uyuşmuyor."
-          }
-          $notes = Get-Content -LiteralPath 'tauri/RELEASE_NOTES.md' -Raw
-          if ([string]::IsNullOrWhiteSpace($notes) -or $notes -notmatch [regex]::Escape($version)) {
-            throw "tauri/RELEASE_NOTES.md içinde sürüm $version bulunmalı."
-          }
-          "version=$version" >> $env:GITHUB_OUTPUT
-          "notes<<NOTLAR_SONU" >> $env:GITHUB_OUTPUT
-          $notes >> $env:GITHUB_OUTPUT
-          "NOTLAR_SONU" >> $env:GITHUB_OUTPUT
-
       - name: Tauri NSIS kurulumu üret + GitHub'a yükle (ÖN SÜRÜM olarak)
         uses: tauri-apps/tauri-action@v0
         env:
@@ -82,7 +94,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         with:
           projectPath: tauri
-          tagName: tauri-v__VERSION__
+          tagName: ${{ steps.meta.outputs.tag }}
+          releaseCommitish: ${{ steps.meta.outputs.commit }}
           releaseName: 'Koç Market __VERSION__'
           releaseBody: ${{ steps.meta.outputs.notes }}
           releaseDraft: false
@@ -94,9 +107,12 @@ jobs:
       - name: Electron → Tauri köprüsü (latest.yml) üret ve yükle
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KOC_RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+          KOC_RELEASE_TAG: ${{ steps.meta.outputs.tag }}
         run: |
-          $v = "${{ steps.meta.outputs.version }}"
+          $v = $env:KOC_RELEASE_VERSION
           $exe = Get-ChildItem 'tauri/src-tauri/target/release/bundle/nsis/*-setup.exe' | Select-Object -First 1
           if (-not $exe) { throw 'NSIS kurulum dosyası bulunamadı.' }
           node tauri/scripts/electron-kopru.mjs $exe.FullName $v kopru
-          gh release upload "tauri-v$v" "kopru/koc-market-tauri-setup-$v.exe" "kopru/latest.yml" --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Electron güncelleme dosyaları üretilemedi.' }
+          gh release upload $env:KOC_RELEASE_TAG "kopru/koc-market-tauri-setup-$v.exe" "kopru/latest.yml" --clobber

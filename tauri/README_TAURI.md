@@ -1,15 +1,14 @@
-# Koç Market — Tauri Sürümü (2.0.4)
+# Koç Market — Tauri Sürümü
 
-Electron uygulamasının Tauri'ye taşınmış hâli. **Electron dosyalarına dokunulmadı**;
-Tauri her şeyiyle bu `tauri/` klasöründe yaşar. `index.html` ana klasörde tek kaynak
-olarak kalır — iki uygulama da aynı dosyayı kullanır.
+Electron ve Tauri masaüstü sürümleri kökteki `index.html` dosyasını ortak kullanır.
+Tauri paket ayarları ve yerel köprü `tauri/` klasöründedir.
 
 ## Klasör yapısı
 
 ```
 KocMarket/
-├─ index.html, cari-core.js, barcode-core.js   ← ORTAK uygulama (değişmedi)
-├─ main.js, preload.js, package.json            ← Electron (değişmedi)
+├─ index.html, cari-core.js, barcode-core.js   ← ortak uygulama
+├─ main.js, preload.js, package.json            ← Electron
 ├─ .github/workflows/build.yml                  ← Electron derleme (v* etiketi)
 ├─ .github/workflows/tauri-build.yml            ← Tauri derleme (tauri-v* etiketi)
 └─ tauri/
@@ -42,46 +41,32 @@ Veri okunamazsa uygulama **boş açılmaz**, uyarı verip kapanır (Electron ver
 
 ## TEK SEFERLİK HAZIRLIK
 
-0. `tauri\github-workflow\tauri-build.yml` dosyasını **`.github\workflows\`** klasörüne kopyala
-   (Electron'un `build.yml`'ının yanına). Uzaktan yazılamayan korumalı bir klasör olduğu için
-   oraya ben koyamadım.
 1. GitHub → repo → **Settings → Secrets and variables → Actions → New repository secret**
    - Ad: `TAURI_SIGNING_PRIVATE_KEY`
    - Değer: `tauri/_GIZLI_ANAHTAR/kocmarket-guncelleme.key` dosyasının **içeriği** (Not Defteri ile aç, tamamını kopyala)
 2. Bu anahtarı **USB'ye yedekle**. Kaybolursa Tauri güncellemeleri imzalanamaz
    (o zaman bir kez elle kurulum gerekir). E-postaya koyma, GitHub'a yükleme.
 
-## YAYINLAMA (her sürümde)
+## Ön sürüm hazırlığı
 
-PowerShell, `C:\KocMarket` içinde:
+1. `tauri/package.json`, `tauri/package-lock.json`, `tauri/src-tauri/tauri.conf.json`,
+   `tauri/src-tauri/Cargo.toml`, `tauri/src-tauri/Cargo.lock` ve `tauri/RELEASE_NOTES.md`
+   dosyalarında sürümün tutarlı olduğunu doğrula. `tauri/` içindeki `npm test` bu eşleşmeyi sınar.
+2. Ön sürüm için `.github/workflows/tauri-build.yml` iş akışını aday daldan elle çalıştır
+   veya `tauri-vX.Y.Z` etiketini doğrulanan commit üzerinde gönder. İş akışı etiketi derlenen
+   commit'e bağlar ve aynı etiketi taşıyan kararlı bir sürüm varsa paket üretmeden durur.
+3. Actions başarılı olduğunda GitHub Releases sayfasında ön sürümün etiketini, Windows kurulum
+   dosyasını, `.sig` dosyasını, `latest.json` ve Electron köprüsü `latest.yml` dosyasını kontrol et.
+   `latest.json` içindeki imza Tauri güncelleyicisinin paket doğrulamasında kullanılır.
+   `latest.yml` içindeki SHA-512 ve dosya boyutunun köprü kurulum dosyasıyla eşleştiğini doğrula.
+4. Kurulum ve güncelleme provasını ayrı bir Windows test ortamında yap. Verili açılış için bir
+   yedek kopyası kullan. Başlangıç, yedek yazma, satış, kapanış ve yeniden açılışı kontrol et.
+   Mağazanın kullandığı `releases/latest/download/latest.json` adresinin eski kararlı sürümü
+   göstermeye devam ettiğini doğrula.
 
-```powershell
-git add .
-git commit -m "Tauri 2.0.0"
-git push
-git tag tauri-v2.0.0
-git push origin tauri-v2.0.0
-```
-
-GitHub Actions ~10-15 dk'da kurulum dosyasını üretir ve **ÖN SÜRÜM (pre-release)**
-olarak yayınlar. Ön sürümü marketteki uygulama GÖRMEZ — önce test edebilirsin.
-
-## TEST → MARKETE DAĞITIM
-
-1. GitHub → Releases → `tauri-v2.0.0` → `koc-market-tauri-setup-2.0.0.exe` indir,
-   **bu bilgisayarda** kur ve dene (bu bilgisayardaki Electron verisini taşır).
-2. Her şey yolundaysa aynı sayfada **Edit → "Set as the latest release"** işaretle,
-   "Set as a pre-release" işaretini kaldır → **Update release**.
-3. Marketteki Electron bir sonraki açılışta "Koç Market 2.0.0 güncellemesi hazır" der.
-   - "Güncellemeyi Kur" → Tauri kurulumu açılır (bir kerelik ekran).
-   - "Daha Sonra" → uygulama kapatılınca sessizce kurulur.
-4. Masaüstündeki "Koç Market" kısayolu artık Tauri'yi açar, veriler taşınmış olur.
-
-## Sonraki sürümler
-
-`tauri/src-tauri/tauri.conf.json` ve `tauri/package.json` içindeki `version`'ı artır,
-`tauri/RELEASE_NOTES.md`'yi güncelle, `tauri-vX.Y.Z` etiketiyle yayınla, test et,
-"latest" yap. Tauri kendi güncelleyicisiyle "Güncellemeyi Kur / Daha Sonra" sorar.
+Testlerden sonra mağazaya dağıtmak için GitHub sürümünde **Set as a pre-release** seçimini
+kaldır ve **Set as the latest release** seçimini etkinleştir. Tauri güncellemeyi kendi
+güncelleyicisiyle, eski Electron sürümü ise `latest.yml` üzerinden alır.
 
 ## Electron'u kaldırma (acele yok)
 

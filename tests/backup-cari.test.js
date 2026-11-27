@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const cari = require('../cari-core.js');
+const { assertAuthorized } = require('../native-authorization.js');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
 const first = html.indexOf('const BACKUP_DATA_KEYS');
@@ -25,6 +26,114 @@ const fixture = price => {
   };
 };
 const plain = value => JSON.parse(JSON.stringify(value));
+
+function dailyBackupApp({ native = true } = {}) {
+  const baseline = fixture(100);
+  const stored = new Map();
+  const writes = [];
+  const browserStorage = {
+    getItem: key => stored.get(key) ?? null,
+    setItem(key, value) { writes.push([key, value]); stored.set(key, value); }
+  };
+  const window = { localStorage: browserStorage };
+  if (native) {
+    for (const [key, value] of [
+      ['koc-prods', baseline.products], ['koc-sales', baseline.sales],
+      ['koc-held', baseline.heldSales], ['koc-cari-state', baseline.cariState]
+    ]) stored.set(key, JSON.stringify(value));
+    window.kocStore = {
+      read: browserStorage.getItem,
+      commit: async (id, entries) => {
+        writes.push(plain(entries));
+        await window.waitForDisk;
+        if (window.diskError) throw window.diskError;
+        const changes = [...Object.entries(entries), ['koc-atomic-last-operation', id]];
+        assertAuthorized(Object.fromEntries(stored), changes, false);
+        for (const [key, value] of changes) stored.set(key, value);
+      }
+    };
+  }
+  const context = vm.createContext({
+    ...baseline, window, dataCommitBusy:false, newOperationId:() => 'backup-1',
+    save() {}, setTimeout() {}, console:{warn() {}}
+  });
+  const browserStart = html.indexOf('function browserStore()');
+  const browserEnd = html.indexOf('let dataCommitBusy', browserStart);
+  vm.runInContext(html.slice(browserStart, browserEnd), context);
+  context.LS = native ? { getItem:browserStorage.getItem, setItem:browserStorage.setItem } : context.browserStore();
+  const dailyStart = html.indexOf('const MAX_BACKUPS');
+  const dailyEnd = html.indexOf('// ── YEDEK YÖNETİCİSİ', dailyStart);
+  const readStart = html.indexOf('function readBackupList()');
+  const readEnd = html.indexOf('function backupCounts(', readStart);
+  vm.runInContext(html.slice(dailyStart, dailyEnd) + html.slice(readStart, readEnd), context);
+  return { baseline, context, stored, window, writes };
+}
+
+test('günlük yedek ve tarihi tek disk onayında yazılır, eşzamanlı istek yedek çoğaltmaz', async () => {
+  const { baseline, context, stored, window, writes } = dailyBackupApp();
+  let acknowledge;
+  window.waitForDisk = new Promise(resolve => { acknowledge = resolve; });
+
+  const first = context.maybeDailyBackup();
+  assert.equal(await context.maybeDailyBackup(), false);
+  assert.equal(writes.length, 1);
+  assert.equal(stored.has('koc-backups'), false);
+  assert.equal(stored.has('koc-last-auto-backup-date'), false);
+
+  acknowledge();
+  assert.equal(await first, true);
+  const [backup] = JSON.parse(stored.get('koc-backups'));
+  assert.equal(backup.reason, 'Günlük otomatik yedek');
+  for (const [key, value] of Object.entries(baseline)) assert.deepEqual(backup[key], value);
+  assert.equal(stored.get('koc-last-auto-backup-date'), context._todayKey());
+  assert.equal(await context.maybeDailyBackup(), false);
+  assert.equal(writes.length, 1);
+});
+
+test('yerel yazma reddi yedeği ve tarihi değiştirmez, gün içinde yeniden denenebilir', async () => {
+  const { context, stored, window, writes } = dailyBackupApp();
+  stored.set('koc-backups', '[{"ts":1}]');
+  stored.set('koc-last-auto-backup-date', '2020-01-01');
+  window.diskError = Object.assign(new Error('Kayıt reddedildi.'), {code:'permission_denied'});
+  assert.equal(await context.maybeDailyBackup(), false);
+  assert.equal(stored.get('koc-backups'), '[{"ts":1}]');
+  assert.equal(stored.get('koc-last-auto-backup-date'), '2020-01-01');
+
+  window.diskError = null;
+  assert.equal(await context.maybeDailyBackup(), true);
+  assert.equal(JSON.parse(stored.get('koc-backups')).length, 2);
+  assert.equal(stored.get('koc-last-auto-backup-date'), context._todayKey());
+  assert.equal(writes.length, 2);
+});
+
+test('eski tarih işareti tek başına bugünün otomatik yedeği sayılamaz', async () => {
+  const { context, stored } = dailyBackupApp();
+  const manual = {ts:Date.now(), reason:'Kullanıcı tarafından'};
+  const oldDaily = {ts:1, reason:'Günlük otomatik yedek'};
+  stored.set('koc-backups', JSON.stringify([manual, oldDaily]));
+  stored.set('koc-last-auto-backup-date', context._todayKey());
+
+  assert.equal(await context.maybeDailyBackup(), true);
+  const [added, ...retained] = JSON.parse(stored.get('koc-backups'));
+  assert.equal(added.reason, oldDaily.reason);
+  assert.equal(context._todayKey(new Date(added.ts)), context._todayKey());
+  assert.deepEqual(retained, [manual, oldDaily]);
+
+  const reopened = dailyBackupApp();
+  for (const [key, value] of stored) reopened.stored.set(key, value);
+  assert.equal(await reopened.context.maybeDailyBackup(), false);
+  assert.equal(reopened.writes.length, 0);
+});
+
+test('tarayıcı önizlemesinde yedek ve gün tek depolama kaydıyla yazılır', async () => {
+  const { context, stored, writes } = dailyBackupApp({native:false});
+  assert.equal(await context.maybeDailyBackup(), true);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0][0], 'koc-atomic-browser-data');
+  const data = JSON.parse(stored.get('koc-atomic-browser-data'));
+  assert.equal(JSON.parse(data['koc-backups']).length, 1);
+  assert.equal(data['koc-last-auto-backup-date'], context._todayKey());
+});
 
 function app() {
   const baseline = fixture(100);

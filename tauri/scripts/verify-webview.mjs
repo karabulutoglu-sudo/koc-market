@@ -45,6 +45,10 @@ function newProfile(name, sample = {}, legacyDecimals = false) {
   if (legacyDecimals) {
     kv['koc-sales'] = kv['koc-sales'].replace(/"(p|total|paid)":60(?=[,}])/g, '"$1":60.0');
     assert.match(kv['koc-sales'], /"total":60\.0/);
+    // Eski sürüm yedek yazılamadığında tek başına bugünün tarihini bırakabiliyordu.
+    const today = new Date();
+    kv['koc-last-auto-backup-date'] = [today.getFullYear(), today.getMonth() + 1, today.getDate()]
+      .map(part => String(part).padStart(2, '0')).join('-');
   }
   kv['koc-admin-pin'] = '1234';
   kv['koc-son-yedek'] = String(Date.now());

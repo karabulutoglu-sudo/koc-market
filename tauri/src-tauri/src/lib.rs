@@ -627,12 +627,16 @@ pub fn run() {
                     if let tauri::webview::PageLoadEvent::Finished = payload.event() {
                         // Sınama betiğini yalnızca izole uygulama sayfasında çalıştır.
                         let url = payload.url();
-                        if url.path() == "/index.html" && (url.scheme() == "tauri"
-                            || url.host_str() == Some("tauri.localhost"))
-                        {
-                            if let Some(profile) = w.state::<AppState>().verify_profile() {
-                                if let Some(script) = isolated_profile::script(profile) {
-                                    let _ = w.eval(&script);
+                        if let Some(profile) = w.state::<AppState>().verify_profile() {
+                            let local_page = matches!(url.path(), "/" | "/index.html")
+                                && matches!((url.scheme(), url.host_str()),
+                                    ("tauri", Some("localhost")) | ("http" | "https", Some("tauri.localhost")));
+                            log_line(profile, &format!("WebView2 doğrulama sayfası: {}://{}{}",
+                                url.scheme(), url.host_str().unwrap_or_default(), url.path()));
+                            if !local_page { return; }
+                            if let Some(script) = isolated_profile::script(profile) {
+                                if let Err(error) = w.eval(&script) {
+                                    log_line(profile, &format!("WebView2 prova betiği başlatılamadı: {error}"));
                                 }
                             }
                         }

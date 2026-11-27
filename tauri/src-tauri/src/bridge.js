@@ -18,6 +18,7 @@
 
   var mem = new Map();
   Object.keys(boot.data || {}).forEach(function (k) { mem.set(k, String(boot.data[k])); });
+  var persisted = new Map(mem);
   var repairActive = false;
   var activeCommit = null;
   var failedCommit = false;
@@ -32,6 +33,28 @@
 
   function invoke(cmd, args) {
     return window.__TAURI_INTERNALS__.invoke(cmd, args || {});
+  }
+
+  function writeError(cause) {
+    if (cause instanceof Error) return cause;
+    var error = new Error(cause && typeof cause.message === 'string' ? cause.message : String(cause));
+    if (cause && typeof cause.code === 'string') error.code = cause.code;
+    return error;
+  }
+
+  function setCachedValue(cache, key, value) {
+    if (value === null) cache.delete(key);
+    else cache.set(key, value);
+  }
+
+  function markRetryResolved() {
+    if (!failCount) return;
+    failCount = 0;
+    if (!failedCommit) showError(null);
+  }
+
+  function showDenied(error) {
+    toast('⚠ KAYIT REDDEDİLDİ: Değişiklik diske yazılmadı.\n' + error.message, '#b00020');
   }
 
   // ── Sıralı yazma kuyruğu ─────────────────────────────────────────
@@ -55,13 +78,26 @@
         await invoke('kv_apply', {
           ops: batch.map(function (e) { return { key: e[0], op: e[1].op, val: e[1].op === 'set' ? e[1].val : null }; })
         });
-        if (failCount) { failCount = 0; if (!failedCommit) showError(null); }
-      } catch (err) {
+        batch.forEach(function (e) { setCachedValue(persisted, e[0], e[1].val); });
+        markRetryResolved();
+      } catch (cause) {
+        var error = writeError(cause);
+        if (error.code === 'permission_denied') {
+          // Yerel yetki kontrolü bütün grubu diskten önce reddetti.
+          // Bu anahtarda başka bir yazma bekliyorsa onun iyimser değeri geçerli kalır.
+          batch.forEach(function (e) {
+            var key = e[0];
+            if (!pending.has(key)) setCachedValue(mem, key, persisted.has(key) ? persisted.get(key) : null);
+          });
+          markRetryResolved();
+          showDenied(error);
+          continue;
+        }
         failCount++;
         // Başarısız grubu geri koy — bu arada daha yeni değer geldiyse o kazanır.
         batch.forEach(function (e) { if (!pending.has(e[0])) pending.set(e[0], e[1]); });
-        console.error('[KOC] Diske yazma hatası:', err);
-        showError('KAYIT HATASI: Son değişiklikler diske yazılamadı. Tekrar deneniyor... (' + failCount + ')\n' + err);
+        console.error('[KOC] Diske yazma hatası:', error);
+        showError('KAYIT HATASI: Son değişiklikler diske yazılamadı. Tekrar deneniyor... (' + failCount + ')\n' + error.message);
         await sleep(Math.min(5000, 500 * failCount));
       }
     }
@@ -122,15 +158,20 @@
           if (!await drain(15000, false)) throw new Error('Önceki kayıtlar henüz diske yazılmadı.');
           await invoke('kv_apply', { ops: ops });
           ops.forEach(function (op) {
-            if (op.op === 'del') mem.delete(op.key);
-            else mem.set(op.key, op.val);
+            setCachedValue(persisted, op.key, op.val);
+            setCachedValue(mem, op.key, op.val);
           });
           failedCommit = false;
           showError(null);
           return { alreadyCommitted: false };
-        } catch (error) {
-          failedCommit = true;
-          showError('KAYIT HATASI: İşlem diske yazılamadı. Tekrar deneyin.\n' + error);
+        } catch (cause) {
+          var error = writeError(cause);
+          if (error.code === 'permission_denied') {
+            showDenied(error);
+          } else {
+            failedCommit = true;
+            showError('KAYIT HATASI: İşlem diske yazılamadı. Tekrar deneyin.\n' + error.message);
+          }
           throw error;
         } finally {
           activeCommit = null;

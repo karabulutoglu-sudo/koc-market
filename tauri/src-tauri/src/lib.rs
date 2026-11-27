@@ -58,9 +58,28 @@ static REPAIR_NONCE: AtomicU64 = AtomicU64::new(0);
 
 // ── Komutlar (JS köprüsünün çağırdığı) ─────────────────────────────
 
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum KvApplyError {
+    PermissionDenied { code: &'static str, message: String },
+    Other(String),
+}
+
+impl From<String> for KvApplyError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
+impl From<&str> for KvApplyError {
+    fn from(message: &str) -> Self {
+        Self::Other(message.to_owned())
+    }
+}
+
 /// Sıralı yazma kuyruğundan gelen grup işlemi tek transaction'da uygula.
 #[tauri::command(async)]
-fn kv_apply(state: tauri::State<'_, AppState>, ops: Vec<Op>) -> Result<(), String> {
+fn kv_apply(state: tauri::State<'_, AppState>, ops: Vec<Op>) -> Result<(), KvApplyError> {
     let _write = state.begin_write()?;
     let repair = state.encoding_repair.lock().map_err(|_| "Onarım kilidi bozuk".to_string())?;
     if repair.is_some() {
@@ -75,7 +94,9 @@ fn kv_apply(state: tauri::State<'_, AppState>, ops: Vec<Op>) -> Result<(), Strin
         }
     }
     let admin = state.admin.lock().map_err(|_| "Yetki kilidi bozuk".to_string())?;
-    authorization::authorize(&st.mem, &ops, admin.authenticated())?;
+    authorization::authorize(&st.mem, &ops, admin.authenticated()).map_err(|message| {
+        KvApplyError::PermissionDenied { code: "permission_denied", message }
+    })?;
     let measure = state.verify_profile().is_some() &&
         ops.iter().any(|op| op.key == "koc-sales") &&
         ops.iter().any(|op| op.key == "koc-atomic-last-operation");

@@ -41,10 +41,12 @@ function setup(invoke = async () => {}, bootData = {}) {
 
 const settle = () => new Promise(setImmediate);
 function deferred() {
-  let resolve;
-  const promise = new Promise(done => { resolve = done; });
-  return { promise, resolve };
+  let resolve, reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
+
+const denied = { code:'permission_denied', message:'Yönetici yetkisi gerekli veya kayıt geçersiz.' };
 
 test('ordinary writes precede one acknowledged transaction for stock, receipt and credit', async () => {
   const oldWrite = deferred(), diskWrite = deferred();
@@ -82,6 +84,95 @@ test('reopening reads the last transaction marker and prevents repeating it', as
   assert.equal((await s.window.kocStore.commit('sale-id', { 'koc-prods': '8' })).alreadyCommitted, true);
   assert.equal(s.window.kocStore.read('koc-prods'), '9');
   assert.throws(() => s.window.kocStore.remove(marker), /İşlem kimliği/);
+});
+
+test('permanent denial rolls back the whole ordinary group without blocking later writes or close', async () => {
+  const earlier = deferred();
+  let writes = 0;
+  const s = setup(async command => {
+    if (command !== 'kv_apply') return;
+    if (++writes === 1) return earlier.promise;
+    if (writes === 2) throw denied;
+  }, { 'koc-held': 'old cart', 'koc-held-shadow': 'old copy' });
+  const store = s.window.kocStore;
+  store.write('koc-last-auto-backup-date','2026-11-20');
+  store.remove('koc-held');
+  store.write('koc-held-shadow','pending copy');
+  store.write('koc-backups','pending backup');
+  assert.equal(store.read('koc-held'), null);
+  assert.equal(store.read('koc-held-shadow'),'pending copy');
+
+  earlier.resolve();
+  assert.equal(await s.window.kocApp.flush(),true);
+  assert.equal(store.read('koc-held'),'old cart');
+  assert.equal(store.read('koc-held-shadow'),'old copy');
+  assert.equal(store.read('koc-backups'),null);
+  assert.equal(store.read('koc-last-auto-backup-date'),'2026-11-20');
+  assert.equal(s.window.kocApp.pendingWrites(),0);
+  assert.match(s.warning.join('\n'),/KAYIT REDDEDİLDİ.*\nYönetici/);
+
+  assert.equal((await store.commit('new-sale',{'koc-sales':'["new-sale"]'})).alreadyCommitted,false);
+  assert.equal(await s.window.__kocFlushAndClose(2),true);
+  assert.deepEqual(s.calls.map(call=>call.command),['kv_apply','kv_apply','kv_apply','flush_done']);
+});
+
+test('rollback keeps a newer optimistic write and eventually rolls back to that acknowledged value', async () => {
+  const rejected = deferred(), newest = deferred();
+  let writes = 0;
+  const s = setup(async command => {
+    if (command !== 'kv_apply') return;
+    if (++writes === 1) return rejected.promise;
+    if (writes === 2) return newest.promise;
+    throw denied;
+  }, {'koc-held':'old cart'});
+  const store = s.window.kocStore;
+  store.write('koc-held','denied cart');
+  store.write('koc-held','new cart');
+  rejected.reject(denied);
+  await settle();
+  assert.equal(store.read('koc-held'),'new cart');
+  assert.equal(s.calls.length,2);
+  assert.equal(s.calls.at(-1).args.ops[0].val,'new cart');
+  newest.resolve();
+  assert.equal(await s.window.kocApp.flush(),true);
+  store.remove('koc-held');
+  assert.equal(store.read('koc-held'),null);
+  assert.equal(await s.window.kocApp.flush(),true);
+  assert.equal(store.read('koc-held'),'new cart');
+});
+
+test('transient ordinary disk failure still retries the latest write', async () => {
+  let writes = 0;
+  const s = setup(async command => {
+    if (command === 'kv_apply' && ++writes === 1) throw new Error('disk busy');
+  }, {'koc-held':'old cart'});
+  const store = s.window.kocStore;
+  store.write('koc-held','first cart');
+  await settle();
+  store.write('koc-held','new cart');
+  const close = s.window.__kocFlushAndClose(1);
+  s.advance(499);
+  assert.deepEqual(s.calls.map(call=>call.command),['kv_apply']);
+  s.advance(1);
+  assert.equal(await close,true);
+  assert.equal(store.read('koc-held'),'new cart');
+  const writesToDisk = s.calls.filter(call=>call.command === 'kv_apply');
+  assert.equal(writesToDisk.length,2);
+  assert.equal(writesToDisk[1].args.ops[0].val,'new cart');
+});
+
+test('a denied atomic transaction leaves the committed data and closing available', async () => {
+  const s = setup(async command => {
+    if (command === 'kv_apply') throw denied;
+  }, { 'koc-business-settings':'old' });
+  const store = s.window.kocStore;
+  await assert.rejects(store.commit('denied-change',{'koc-business-settings':'new'}),
+    {code:'permission_denied', message:denied.message});
+  assert.equal(store.read('koc-business-settings'),'old');
+  assert.equal(store.read(marker),null);
+  assert.equal(await s.window.__kocFlushAndClose(3),true);
+  assert.match(s.warning.join('\n'),/KAYIT REDDEDİLDİ/);
+  assert.deepEqual(s.calls.map(call=>call.command),['kv_apply','flush_done']);
 });
 
 test('failed native transaction keeps old data and blocks transitions until a successful retry', async () => {

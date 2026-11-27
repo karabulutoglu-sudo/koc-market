@@ -33,3 +33,12 @@ test('yayın iş akışı not yoksa durur ve notları GitHub yayınına ekler', 
   assert.match(workflow, /gh release edit/);
   assert.match(workflow, /--notes-file RELEASE_NOTES\.md/);
 });
+
+test('Tauri yayını kök JavaScript ile paketlenmiş PDF ve CSP testlerine bağlıdır', () => {
+  const workflow = read('.github/workflows/tauri-build.yml');
+  const signing = workflow.indexOf('uses: tauri-apps/tauri-action@');
+  assert.ok(signing > 0);
+  const checks = workflow.slice(0, signing);
+  assert.match(checks, /- name: Kökteki JavaScript testleri\r?\n\s+run: npm test/);
+  assert.match(checks, /npm run hazirla[\s\S]*?npm run test:pdf\r?\n\s+if \(\$LASTEXITCODE -ne 0\) \{ throw/);
+});

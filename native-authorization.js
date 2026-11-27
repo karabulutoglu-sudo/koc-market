@@ -212,12 +212,25 @@ function authorized(mem,entries,admin) {
     const [added,...kept] = records.get(BACKUPS);
     const before = parse(mem[BACKUPS],[]);
     if (!added || !equal(kept,before.slice(0,kept.length))) return false;
-    for (const [field,key] of [['products',PRODUCT],['sales',SALE],['heldSales',HELD]]) {
-      if (!equal(added[field],parse(mem[key],[]))) return false;
-    }
-    if (mem[CARI] && !equal(added.cariState,parse(mem[CARI]))) return false;
+    const previous = (key,fallback) => mem[key] === undefined ? fallback : parse(mem[key]);
+    const next = (key,fallback) => records.has(key) ? records.get(key) : previous(key,fallback);
+    // A backup may be taken on either side of an ordinary write that shares its batch.
+    if (!matchesBackup(added,next) && !matchesBackup(added,previous)) return false;
   }
   return true;
+}
+
+function matchesBackup(backup,read) {
+  for (const [field,key] of [['products',PRODUCT],['sales',SALE],['heldSales',HELD]]) {
+    if (!equal(backup[field],read(key,[]))) return false;
+  }
+  const cariState = read(CARI);
+  if (cariState !== undefined) return equal(backup.cariState,cariState);
+  if (backup.cariState == null) return true;
+  if (!isObject(backup.cariState)) return false;
+  const empty = cari.createState();
+  if (!Object.hasOwn(backup.cariState,'lastId')) delete empty.lastId;
+  return equal(backup.cariState,empty);
 }
 
 function validSale(sale) {

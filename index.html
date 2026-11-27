@@ -2499,8 +2499,6 @@ let priceCheckProduct = null;
 let _lastUnknownScanCode = '';
 let _lastUnknownScanTime = 0;
 
-function saveHeld(){ safeSaveJSON('koc-held', heldSales); updateHeldBadge(); }
-
 // ── BLOKLAMAYAN UYGULAMA-İÇİ ONAY KUTUSU ──
 // Yerleşik confirm() BLOKLAYICIdır: hızlı barkod okuyucu kayıtsız bir barkodu
 // tekrar tekrar okuduğunda dialoglar üst üste binip uygulamayı kilitliyordu.
@@ -3663,22 +3661,42 @@ function showMultIndicator() {
 }
 
 // ── BEKLET / BEKLEYEN ──
-function holdSale() {
-  if (dataCommitBusy) return;
-  if (cart.length === 0) { flash('Sepet boş — beklemeye alınacak bir şey yok', false); return; }
-  const held = {
-    id: Date.now(),
+function heldCartSnapshot() {
+  const now = new Date();
+  return {
+    id: newOperationId(),
     cart: cart.map(c => ({...c})),
-    time: new Date().toLocaleTimeString('tr-TR', {hour:'2-digit',minute:'2-digit'}),
-    date: new Date().toLocaleDateString('tr-TR'),
+    time: now.toLocaleTimeString('tr-TR', {hour:'2-digit',minute:'2-digit'}),
+    date: now.toLocaleDateString('tr-TR'),
   };
-  heldSales.push(held);
-  saveHeld();
-  cart = [];
-  paying = false;
-  qtyMultiplier = 1;
+}
+
+async function saveHeldState(next, nextCart) {
+  try {
+    await commitRecords(newOperationId(), {'koc-held':next}, () => {
+      heldSales = next;
+      if (nextCart) {
+        cart = nextCart;
+        paying = false;
+        paymentMethod = '';
+        qtyMultiplier = 1;
+      }
+    });
+  } catch (error) {
+    flash('Bekleyen satış kaydedilemedi. ' + (error.message || String(error)), false);
+    return false;
+  }
+  updateHeldBadge();
   showMultIndicator();
   renderCart();
+  return true;
+}
+
+async function holdSale() {
+  if (dataCommitBusy) return;
+  if (cart.length === 0) { flash('Sepet boş — beklemeye alınacak bir şey yok', false); return; }
+  const held = heldCartSnapshot();
+  if (!await saveHeldState([...heldSales,held], [])) return;
   flash('⏸ Satış beklemeye alındı (#' + String(held.id).slice(-4) + ')', true);
   focusBarcode();
 }
@@ -3721,16 +3739,14 @@ function resumeHeld(id) {
   if (dataCommitBusy) return;
   const idx = heldSales.findIndex(h => h.id === id);
   if (idx < 0) return;
-  // Yüklemeyi gerçekleştiren ortak adım (barkodu id ile tekrar bul — kutu açıkken
-  // liste değişmiş olabilir).
-  function _doResume(){
-    const i = heldSales.findIndex(h => h.id === id);
-    if (i < 0) return;
-    cart = heldSales[i].cart.map(c => ({...c}));
-    heldSales.splice(i, 1);
-    saveHeld();
+  async function loadHeld() {
+    if (dataCommitBusy) return;
+    const held = heldSales.find(h => h.id === id);
+    if (!held) return;
+    const next = heldSales.filter(h => h.id !== id);
+    if (cart.length) next.push(heldCartSnapshot());
+    if (!await saveHeldState(next, held.cart.map(item => ({...item})))) return;
     closeHeldList();
-    renderCart();
     flash('↩ Bekleyen satış yüklendi', true);
   }
   if (cart.length > 0) {
@@ -3738,22 +3754,22 @@ function resumeHeld(id) {
       title: 'Mevcut sepet dolu',
       bodyHtml: 'Mevcut sepetiniz dolu. Bekleyen satışı yüklemek için önce mevcut sepeti de beklemeye almak ister misiniz?',
       okText: 'Beklemeye al ve yükle', cancelText: 'İptal',
-      onOk: function(){ holdSale(); _doResume(); }
+      onOk: loadHeld
     });
     return;
   }
-  _doResume();
+  loadHeld();
 }
 function deleteHeld(id) {
   appConfirm({
     title: 'Bekleyen satışı sil',
     bodyHtml: 'Bu bekleyen satış silinsin mi? Geri alınamaz.',
     okText: '✕ Sil', cancelText: 'Vazgeç',
-    onOk: function(){
-      heldSales = heldSales.filter(h => h.id !== id);
-      saveHeld();
-      openHeldList();
-      if (heldSales.length === 0) closeHeldList();
+    onOk: async function(){
+      if (dataCommitBusy || !heldSales.some(h => h.id === id)) return;
+      if (!await saveHeldState(heldSales.filter(h => h.id !== id))) return;
+      if (heldSales.length) openHeldList();
+      else closeHeldList();
     }
   });
 }

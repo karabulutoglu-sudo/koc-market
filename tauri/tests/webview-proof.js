@@ -3,9 +3,9 @@
   'use strict';
 
   const stage = window.__KOC_VERIFY_STAGE;
-  if (!['sqlite', 'json', 'reopen', 'realistic'].includes(stage)) return;
+  if (!['clean', 'old-decimal', 'sqlite', 'json', 'reopen', 'realistic'].includes(stage)) return;
   const invoke = (name, args) => window.__TAURI_INTERNALS__.invoke(name, args || {});
-  const barcode = '8699991234567';
+  let barcode = '8699991234567';
   const customerId = 'proof-customer';
   const startupMs = Math.round(performance.now());
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -50,7 +50,7 @@
     try {
       await invoke('kv_apply', { ops: [{ key, op: 'set', val: JSON.stringify(value) }] });
     } catch (error) {
-      denied = /yönetici|yetki/i.test(String(error));
+      denied = error?.code === 'permission_denied' || /yönetici|yetki/i.test(String(error));
     }
     check(denied, 'Kasiyerin yerel yazma girişimi reddedilmedi: ' + key);
   }
@@ -196,11 +196,47 @@
     return { saleIds: sales.map(receipt => receipt.id), stock: product().s, balance: 12.8 };
   }
 
+  async function waitForDailyBackup(saleCount) {
+    await until(() => {
+      const raw = window.kocStore.read('koc-backups');
+      const [backup] = JSON.parse(raw || '[]');
+      return backup?.reason === 'Günlük otomatik yedek' && backup.sales.length === saleCount
+        && window.kocStore.read('koc-last-auto-backup-date') === _todayKey()
+        && window.kocApp.pendingWrites() === 0;
+    }, 'Açılıştaki günlük yedek diske yazılmadı.');
+    check(await window.kocApp.flush(), 'Günlük yedek yazma kuyruğu boşalmadı.');
+  }
+
+  async function verifyHeldSwap() {
+    scan(1);
+    const parking = holdSale();
+    check(cart[0]?.q === 1, 'Sepet disk onayından önce kapandı.');
+    await parking;
+    check(cart.length === 0 && heldSales.length === 1, 'İlk sepet beklemeye alınamadı.');
+    scan(2);
+    openHeldList();
+    click('.held-resume');
+    click('#appConfirmOk');
+    await until(() => cart[0]?.q === 1 && heldSales[0]?.cart[0]?.q === 2,
+      'Sepet değiştirme diske tek işlemle uygulanamadı.');
+    cancelSale();
+    openHeldList();
+    click('.held-delete');
+    click('#appConfirmOk');
+    await until(() => heldSales.length === 0 && !dataCommitBusy, 'Bekleyen prova sepeti silinemedi.');
+  }
+
   try {
     check(window.kocApp?.platform === 'tauri' && window.kocAdmin, 'Yerel Tauri köprüsü yüklenmedi.');
     check(typeof finishSale === 'function' && typeof window.KocCari?.customerBalance === 'function',
       'Kasa betikleri yüklenmedi.');
-    check(product()?.n === 'İÇİM ŞÖLEN Prova' && product()?.p === 12.8, 'Türkçe örnek ürün açılışta korunmadı.');
+    if (stage === 'clean') {
+      const seeded = products.find(item => item.p === 60 && !item.stockTracked && item.s === 0);
+      check(seeded, 'Temiz kurulum kataloğunda 60 TL olan bir ürün bulunmalı.');
+      barcode = seeded.b;
+    } else {
+      check(product()?.n === 'İÇİM ŞÖLEN Prova' && product()?.p === 12.8, 'Türkçe örnek ürün açılışta korunmadı.');
+    }
     check(await window.kocApp.flush(), 'Açılış yazmaları diske inmedi.');
     assertCsp();
     const { engine } = await window.kocApp.info();
@@ -230,7 +266,30 @@
     }
 
     let details;
-    if (stage === 'json') {
+    if (stage === 'clean' || stage === 'old-decimal') {
+      const expectedOriginalSales = stage === 'clean' ? 0 : 1;
+      check(sales.length === expectedOriginalSales, 'Kurulum profili beklenmedik satışla açıldı.');
+      if (stage === 'old-decimal') {
+        check(/"total":60\.0/.test(window.kocStore.read('koc-sales')), 'Eski fişin .0 biçimi prova için gerekli.');
+      }
+      await waitForDailyBackup(expectedOriginalSales);
+      if (stage === 'clean') {
+        // Ödeme yapılmadan önce kasiyer kuyruğunun reddedilen yazmadan toparlandığını sınar.
+        const currentBusiness = window.kocStore.read('koc-business-settings');
+        window.kocStore.write('koc-business-settings', JSON.stringify({name:'Yalnız yetki provası'}));
+        await until(() => window.kocApp.pendingWrites() === 0, 'Reddedilen yazma kuyrukta kaldı.');
+        check(window.kocStore.read('koc-business-settings') === currentBusiness, 'Reddedilen ayar bellekte kaldı.');
+        const startupReminder = document.getElementById('yedekHatirlatmaOverlay');
+        if (startupReminder) Array.from(startupReminder.querySelectorAll('button'))
+          .find(button => button.textContent.includes('Şimdilik atla'))?.click();
+        await verifyHeldSwap();
+      }
+      const reminder = document.getElementById('yedekHatirlatmaOverlay');
+      if (reminder) Array.from(reminder.querySelectorAll('button')).find(button => button.textContent.includes('Şimdilik atla'))?.click();
+      const amount = stage === 'clean' ? '60,00' : '12,80';
+      details = { ...await cashSale(1, amount), dailyBackup:true, originalSales:expectedOriginalSales,
+        denialRecovery:stage === 'clean' };
+    } else if (stage === 'json') {
       check(sales.length === 2 && product().s === 6, 'SQLite sonrası iki fiş ve stok 6 bekleniyordu.');
       details = await cashSale(1, '12,80');
       check(sales.length === 3 && product().s === 5, 'JSON satışından sonra üç fiş ve stok 5 bekleniyordu.');

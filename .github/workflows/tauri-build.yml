@@ -35,6 +35,9 @@ jobs:
         with:
           workspaces: tauri/src-tauri -> target
 
+      - name: Kökteki JavaScript testleri
+        run: npm test
+
       - name: Bağımlılıkları yükle
         working-directory: tauri
         run: npm ci
@@ -48,6 +51,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Rust açılış testleri başarısız.' }
           npm run hazirla
           if ($LASTEXITCODE -ne 0) { throw 'Web preparation failed.' }
+          npm run test:pdf
+          if ($LASTEXITCODE -ne 0) { throw 'PDF ve CSP testleri başarısız.' }
           cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
           if ($LASTEXITCODE -ne 0) { throw 'Repair and backup tests failed.' }
 

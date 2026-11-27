@@ -23,9 +23,14 @@ const product = {b:'8699991234567', n:'İÇİM ŞÖLEN Prova', p:12.8, s:10, sto
 const customerId = 'proof-customer';
 console.log('İzole prova klasörü', sandbox);
 
-function newProfile(name, sample = {}) {
+function profileFolder(name) {
   const dir = path.join(sandbox,name);
   fs.mkdirSync(dir);
+  return dir;
+}
+
+function newProfile(name, sample = {}, legacyDecimals = false) {
+  const dir = profileFolder(name);
   const operational = { schemaVersion:1, units:['Adet'], defaultUnit:'Adet', defaultCriticalStock:2,
     trackStock:true, allowNegativeStock:false, defaultVat:20, vatRates:[0,1,10,20], priceRounding:'0.01' };
   const initial = {
@@ -37,6 +42,10 @@ function newProfile(name, sample = {}) {
     'koc-operational-settings':operational
   };
   const kv = Object.fromEntries(Object.entries(initial).map(([key,value]) => [key,JSON.stringify(value)]));
+  if (legacyDecimals) {
+    kv['koc-sales'] = kv['koc-sales'].replace(/"(p|total|paid)":60(?=[,}])/g, '"$1":60.0');
+    assert.match(kv['koc-sales'], /"total":60\.0/);
+  }
   kv['koc-admin-pin'] = '1234';
   kv['koc-son-yedek'] = String(Date.now());
   fs.writeFileSync(path.join(dir,'koc-data.json'),JSON.stringify(kv),{flag:'wx'});
@@ -92,6 +101,31 @@ function readDb(dir) {
   try { return Object.fromEntries(db.prepare('SELECT key,value FROM kv').all().map(row => [row.key,row.value])); }
   finally { db.close(); }
 }
+
+function verifyBackupOnDisk(data, expectedOriginalSales) {
+  const [backup] = JSON.parse(data['koc-backups']);
+  assert.equal(backup.reason, 'Günlük otomatik yedek');
+  assert.equal(backup.sales.length, expectedOriginalSales);
+  assert.match(data['koc-last-auto-backup-date'], /^\d{4}-\d{2}-\d{2}$/);
+}
+
+const clean = profileFolder('temiz');
+await runStage(clean,'clean');
+const cleanData = readDb(clean);
+verifyBackupOnDisk(cleanData,0);
+assert.equal(JSON.parse(cleanData['koc-sales']).length,1);
+
+const decimalReceipt = {
+  id:'eski-ondalik-fis', at:1, total:60, paid:60, change:0, paymentMethod:'cash',
+  items:[{b:'test-gecmis',n:'Örnek eski kalem',p:60,q:1,k:20}]
+};
+const oldDecimals = newProfile('eski-ondalik',{sales:[decimalReceipt]},true);
+await runStage(oldDecimals,'old-decimal');
+const decimalData = readDb(oldDecimals);
+verifyBackupOnDisk(decimalData,1);
+const [newReceipt,oldReceipt] = JSON.parse(decimalData['koc-sales']);
+assert.equal(newReceipt.total,12.8);
+assert.deepEqual(oldReceipt,decimalReceipt);
 
 const synthetic = newProfile('sentetik');
 await runStage(synthetic,'sqlite');

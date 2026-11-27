@@ -1,7 +1,7 @@
 use crate::store::{Kv, Op};
 use ring::{pbkdf2, rand::{SecureRandom, SystemRandom}};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{json, Number, Value};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
@@ -141,6 +141,47 @@ fn raw_json(raw: Option<&str>) -> Option<Value> {
 
 fn read(mem: &Kv, key: &str) -> Option<Value> {
     raw_json(mem.get(key).map(String::as_str))
+}
+
+// JSON.stringify serializes integral JavaScript numbers without a decimal point.
+// Only equate floating and integer representations inside JavaScript's safe range.
+fn integral_float(number: &Number) -> Option<i64> {
+    if !number.is_f64() { return None; }
+    let float = number.as_f64()?;
+    const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
+    (float.fract() == 0.0 && (-MAX_SAFE..=MAX_SAFE).contains(&float)).then(|| float as i64)
+}
+
+fn exact_i64(value: &Value) -> Option<i64> {
+    let Value::Number(number) = value else { return None; };
+    number.as_i64().or_else(|| integral_float(number))
+}
+
+fn json_equivalent(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Number(a), Value::Number(b)) => a == b ||
+            integral_float(a).is_some_and(|n| b.as_i64() == Some(n)) ||
+            integral_float(b).is_some_and(|n| a.as_i64() == Some(n)),
+        (Value::Array(a), Value::Array(b)) => same_values(a, b),
+        (Value::Object(a), Value::Object(b)) => a.len() == b.len() &&
+            a.iter().all(|(key, value)| b.get(key).is_some_and(|other| json_equivalent(value, other))),
+        _ => left == right,
+    }
+}
+
+fn same_values(left: &[Value], right: &[Value]) -> bool {
+    left.len() == right.len() && left.iter().zip(right).all(|(a, b)| json_equivalent(a, b))
+}
+
+fn starts_with_values(values: &[Value], prefix: &[Value]) -> bool {
+    values.get(..prefix.len()).is_some_and(|start| same_values(start, prefix))
+}
+
+fn raw_equivalent(current: &str, proposed: &str) -> bool {
+    current == proposed || match (raw_json(Some(current)), raw_json(Some(proposed))) {
+        (Some(a), Some(b)) => json_equivalent(&a, &b),
+        _ => false,
+    }
 }
 
 fn normalized_barcode(barcode: &str) -> String {
@@ -305,7 +346,11 @@ fn authorize_inner(mem: &Kv, ops: &[Op], is_admin: bool) -> Option<()> {
             let value = raw_json(Some(raw))?;
             if matches!(key, PRODUCT | SALE | HELD | BACKUPS) && !value.is_array() { return None; }
             if matches!(key, CARI | CATEGORY | STOCK | "koc-business-settings" | "koc-user-settings") && !value.is_object() { return None; }
-            if mem.get(key).map(String::as_str) != Some(raw) { records.insert(key, value); }
+            if mem.get(key).map(String::as_str) != Some(raw)
+                && (is_admin || !read(mem, key).is_some_and(|before| json_equivalent(&before, &value)))
+            {
+                records.insert(key, value);
+            }
         } else if key == MARKER {
             if raw.is_empty() || raw.len() > 160 || !raw.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
                 return None;
@@ -317,7 +362,7 @@ fn authorize_inner(mem: &Kv, ops: &[Op], is_admin: bool) -> Option<()> {
             let current = writes.get(base).copied().unwrap_or_else(|| mem.get(base).map(String::as_str));
             if suffix == "-emergency-ts" {
                 if raw.parse::<u64>().is_err() { return None; }
-            } else if current != Some(raw) {
+            } else if !current.is_some_and(|actual| raw_equivalent(actual, raw)) {
                 return None;
             }
         }
@@ -329,7 +374,7 @@ fn authorize_inner(mem: &Kv, ops: &[Op], is_admin: bool) -> Option<()> {
         let old = stored_array(mem, SALE)?;
         let next = next.as_array()?;
         let (sale, rest) = next.split_first()?;
-        if rest != old || !valid_receipt(sale) || old.iter().any(|entry| id(&entry["id"]) == id(&sale["id"])) {
+        if !same_values(rest, &old) || !valid_receipt(sale) || old.iter().any(|entry| id(&entry["id"]) == id(&sale["id"])) {
             return None;
         }
         let old_catalog = stored_array(mem, PRODUCT)?;
@@ -347,9 +392,12 @@ fn authorize_inner(mem: &Kv, ops: &[Op], is_admin: bool) -> Option<()> {
     if let Some(next) = records.get(HELD) {
         let old = stored_array(mem, HELD)?;
         let next = next.as_array()?;
-        let existing: Vec<_> = next.iter().filter(|item| old.contains(item)).collect();
-        let old_remaining: Vec<_> = old.iter().filter(|item| next.contains(item)).collect();
-        if existing != old_remaining || old.len().saturating_sub(existing.len()) > 1 || next.len().saturating_sub(existing.len()) > 1 {
+        let existing: Vec<_> = next.iter().filter(|item| old.iter().any(|old| json_equivalent(old, item))).collect();
+        let old_remaining: Vec<_> = old.iter().filter(|item| next.iter().any(|next| json_equivalent(next, item))).collect();
+        if existing.len() != old_remaining.len()
+            || !existing.iter().zip(&old_remaining).all(|(a, b)| json_equivalent(a, b))
+            || old.len().saturating_sub(existing.len()) > 1 || next.len().saturating_sub(existing.len()) > 1
+        {
             return None;
         }
         let mut ids = HashSet::new();
@@ -360,15 +408,36 @@ fn authorize_inner(mem: &Kv, ops: &[Op], is_admin: bool) -> Option<()> {
     if let Some(next) = records.get(BACKUPS) {
         let old = stored_array(mem, BACKUPS)?;
         let (added, kept) = next.as_array()?.split_first()?;
-        if kept.len() > old.len() || kept != &old[..kept.len()] { return None; }
-        for (field, key) in [("products",PRODUCT),("sales",SALE),("heldSales",HELD)] {
-            if added[field].as_array()? != &stored_array(mem, key)? { return None; }
-        }
-        if let Some(cari) = read(mem, CARI) {
-            if added["cariState"] != cari { return None; }
-        }
+        if !starts_with_values(&old, kept) { return None; }
+        // Snapshot creation can happen on either side of a queued change. Each
+        // allowed snapshot represents one whole state, after validating changes above.
+        if !backup_matches(added, mem, Some(&records)) && !backup_matches(added, mem, None) { return None; }
     }
     Some(())
+}
+
+fn backup_matches(backup: &Value, mem: &Kv, pending: Option<&HashMap<&str, Value>>) -> bool {
+    for (field, key) in [("products", PRODUCT), ("sales", SALE), ("heldSales", HELD)] {
+        let Some(snapshot) = backup[field].as_array() else { return false; };
+        let equivalent = if let Some(record) = pending.and_then(|records| records.get(key)) {
+            record.as_array().is_some_and(|items| same_values(items, snapshot))
+        } else {
+            stored_array(mem, key).is_some_and(|items| same_values(&items, snapshot))
+        };
+        if !equivalent { return false; }
+    }
+    if let Some(record) = pending.and_then(|records| records.get(CARI)) {
+        return json_equivalent(&backup["cariState"], record);
+    }
+    match read(mem, CARI) {
+        Some(record) => json_equivalent(&backup["cariState"], &record),
+        None if !mem.contains_key(CARI) => {
+            let account = &backup["cariState"];
+            account.is_null() || (new_counter(account) == Some(0) &&
+                same_except(&empty_cari(), account, &["lastId"]).is_some())
+        }
+        None => false,
+    }
 }
 
 fn stored_array(mem: &Kv, key: &str) -> Option<Vec<Value>> {
@@ -378,7 +447,7 @@ fn stored_array(mem: &Kv, key: &str) -> Option<Vec<Value>> {
 
 fn id(value: &Value) -> Option<String> {
     if let Some(s) = value.as_str().filter(|s| !s.is_empty()) { return Some(s.to_string()); }
-    value.as_i64().map(|number| number.to_string())
+    exact_i64(value).map(|number| number.to_string())
 }
 
 fn money(value: &Value) -> Option<i64> {
@@ -387,24 +456,24 @@ fn money(value: &Value) -> Option<i64> {
 }
 
 fn nonneg(value: &Value) -> Option<i64> {
-    value.as_i64().filter(|&n| n >= 0)
+    exact_i64(value).filter(|&n| n >= 0)
 }
 
 fn valid_receipt(sale: &Value) -> bool {
     fn validate(sale: &Value) -> Option<()> {
         id(&sale["id"])?;
-        sale["at"].as_i64()?;
+        exact_i64(&sale["at"])?;
         sale["d"].as_str()?;
         let items = sale["items"].as_array()?.iter();
         let mut total = 0i64;
         let mut count = 0;
         for item in items {
             item["b"].as_str().filter(|b| !b.is_empty())?;
-            let qty = item["q"].as_i64().filter(|&q| q > 0)?;
+            let qty = exact_i64(&item["q"]).filter(|&q| q > 0)?;
             let vat = item["k"].as_f64()?;
             if !(0.0..=100.0).contains(&vat) { return None; }
             let line = money(&item["p"])?.checked_mul(qty)?;
-            if item["totalCents"].as_i64()? != line { return None; }
+            if exact_i64(&item["totalCents"])? != line { return None; }
             total = total.checked_add(line)?;
             count += 1;
         }
@@ -430,11 +499,11 @@ fn valid_stock_delta(mem: &Kv, old: &[Value], new: &[Value], sale: &Value) -> bo
         let mut quantities = HashMap::new();
         for item in sale["items"].as_array().unwrap() {
             let sum = quantities.entry(item["b"].as_str()).or_insert(0i64);
-            let Some(next) = sum.checked_add(item["q"].as_i64().unwrap()) else { return false; };
+            let Some(next) = sum.checked_add(exact_i64(&item["q"]).unwrap()) else { return false; };
             *sum = next;
         }
         for p in expected.iter_mut().filter(|p| p.is_object()) {
-            let stock = p["s"].as_i64().unwrap_or_default();
+            let stock = exact_i64(&p["s"]).unwrap_or_default();
             if p["stockTracked"] == json!(true) || (p["stockTracked"].is_null() && stock > 0) {
                 if let Some(qty) = quantities.get(&p["b"].as_str()) {
                     let Some(remaining) = stock.checked_sub(*qty) else { return false; };
@@ -445,21 +514,25 @@ fn valid_stock_delta(mem: &Kv, old: &[Value], new: &[Value], sale: &Value) -> bo
             }
         }
     }
-    expected == new
+    same_values(&expected, new)
 }
 
 fn same_except(before: &Value, after: &Value, allowed: &[&str]) -> Option<()> {
     let old = before.as_object()?;
     let new = after.as_object()?;
-    if old.iter().any(|(k,v)| !allowed.contains(&k.as_str()) && new.get(k) != Some(v)) ||
+    if old.iter().any(|(k,v)| !allowed.contains(&k.as_str()) && !new.get(k).is_some_and(|other| json_equivalent(v, other))) ||
         new.keys().any(|k| !allowed.contains(&k.as_str()) && !old.contains_key(k)) {
         return None;
     }
     Some(())
 }
 
+fn empty_cari() -> Value {
+    json!({"schemaVersion":1,"customers":[],"lots":[],"entries":[]})
+}
+
 fn validate_cari(mem: &Kv, next: &Value, receipt: Option<&Value>) -> Option<()> {
-    let old = read(mem, CARI).or_else(|| (!mem.contains_key(CARI)).then(|| json!({"schemaVersion":1,"customers":[],"lots":[],"entries":[]})))?;
+    let old = read(mem, CARI).or_else(|| (!mem.contains_key(CARI)).then(empty_cari))?;
     same_except(&old,next,&["lastId","customers","lots","entries"])?;
     if new_counter(next)? < new_counter(&old)? { return None; }
     let before_customers = old["customers"].as_array()?;
@@ -468,37 +541,37 @@ fn validate_cari(mem: &Kv, next: &Value, receipt: Option<&Value>) -> Option<()> 
     let lots = next["lots"].as_array()?;
     let before_entries = old["entries"].as_array()?;
     let entries = next["entries"].as_array()?;
-    if customers.starts_with(before_customers) && customers.len() == before_customers.len()+1 {
+    if customers.len() == before_customers.len()+1 && starts_with_values(customers, before_customers) {
         let added = customers.last()?;
         let customer_id = id(&added["id"])?;
-        return (receipt.is_none() && before_lots == lots && before_entries == entries && added["active"] == json!(true)
+        return (receipt.is_none() && same_values(before_lots, lots) && same_values(before_entries, entries) && added["active"] == json!(true)
             && added["name"].as_str().is_some_and(|s| !s.trim().is_empty())
             && !before_customers.iter().any(|c| id(&c["id"]).as_ref() == Some(&customer_id))).then_some(());
     }
-    if before_customers != customers || entries.len() != before_entries.len()+1 || lots.len() < before_lots.len() {
+    if !same_values(before_customers, customers) || entries.len() != before_entries.len()+1 || lots.len() < before_lots.len() {
         return None;
     }
     let added = entries.last()?;
     let customer_id = &added["customerId"];
-    let customer = customers.iter().find(|c| &c["id"] == customer_id)?;
+    let customer = customers.iter().find(|c| json_equivalent(&c["id"], customer_id))?;
     let kind = added["type"].as_str()?;
     let debit = nonneg(&added["debitCents"])?;
     let credit = nonneg(&added["creditCents"])?;
     let new_lots = &lots[before_lots.len()..];
-    if before_entries.iter().any(|line| line["id"] == added["id"]) { return None; }
-    let previous_balance = before_entries.iter().filter(|line| &line["customerId"] == customer_id).try_fold(0i64, |sum,line|
-        sum.checked_add(line["debitCents"].as_i64()?)?.checked_sub(line["creditCents"].as_i64()?))?;
-    if added["balanceCents"].as_i64()? != previous_balance.checked_add(debit)?.checked_sub(credit)? { return None; }
+    if before_entries.iter().any(|line| json_equivalent(&line["id"], &added["id"])) { return None; }
+    let previous_balance = before_entries.iter().filter(|line| json_equivalent(&line["customerId"], customer_id)).try_fold(0i64, |sum,line|
+        sum.checked_add(exact_i64(&line["debitCents"])?)?.checked_sub(exact_i64(&line["creditCents"])?))?;
+    if exact_i64(&added["balanceCents"])? != previous_balance.checked_add(debit)?.checked_sub(credit)? { return None; }
     match kind {
         "payment" if receipt.is_none() && debit == 0 && credit > 0 && new_lots.is_empty() => {
             if customer["active"] == json!(false) && credit > previous_balance { return None; }
         }
         "credit_sale" | "manual_product" if credit == 0 && customer["active"] != json!(false) => {
             let max = customer["riskLimit"].as_f64().unwrap_or(0.0);
-            if max > 0.0 && added["balanceCents"].as_i64()? > (max * 100.0).round() as i64 { return None; }
+            if max > 0.0 && exact_i64(&added["balanceCents"])? > (max * 100.0).round() as i64 { return None; }
             let items = added["details"]["items"].as_array()?;
             if items.is_empty() || new_lots.len() != items.len() { return None; }
-            let from_sale = receipt.filter(|s| s["paymentMethod"] == "cari" && &s["customerId"] == customer_id &&
+            let from_sale = receipt.filter(|s| s["paymentMethod"] == "cari" && json_equivalent(&s["customerId"], customer_id) &&
                 id(&s["id"]) == id(&added["referenceId"]) && money(&s["total"]) == Some(debit)).and_then(|s| s["items"].as_array());
             let catalog = stored_array(mem, PRODUCT)?;
             if kind == "credit_sale" && !from_sale.is_some_and(|items_from_sale| items_from_sale.len() == items.len()) { return None; }
@@ -506,18 +579,18 @@ fn validate_cari(mem: &Kv, next: &Value, receipt: Option<&Value>) -> Option<()> 
             let mut lots_ids: HashSet<_> = before_lots.iter().map(|row| id(&row["id"])).collect();
             let mut total = 0i64;
             for (index,(line,lot)) in items.iter().zip(new_lots).enumerate() {
-                let qty = line["quantity"].as_i64().filter(|&q| q > 0)?;
+                let qty = exact_i64(&line["quantity"]).filter(|&q| q > 0)?;
                 let unit = nonneg(&line["unitPriceCents"])?;
                 let line_cents = qty.checked_mul(unit)?;
                 if let Some(source) = from_sale {
-                    if line["barcode"] != source[index]["b"] || money(&source[index]["p"]) != Some(unit) || source[index]["q"].as_i64() != Some(qty) { return None; }
+                    if line["barcode"] != source[index]["b"] || money(&source[index]["p"]) != Some(unit) || exact_i64(&source[index]["q"]) != Some(qty) { return None; }
                 } else if qty != 1 || !catalog.iter().any(|p| p["b"] == line["barcode"] && money(&p["p"]) == Some(unit)) {
                     return None;
                 }
-                if !lots_ids.insert(Some(id(&lot["id"])?)) || lot["id"] != line["lotId"] || &lot["customerId"] != customer_id ||
+                if !lots_ids.insert(Some(id(&lot["id"])?)) || !json_equivalent(&lot["id"], &line["lotId"]) || !json_equivalent(&lot["customerId"], customer_id) ||
                     id(&lot["saleId"]) != id(&added["referenceId"]) || lot["barcode"] != line["barcode"] ||
-                    lot["originalQuantity"] != line["quantity"] || lot["highestAppliedUnitPriceCents"].as_i64()? != unit ||
-                    lot["originalUnitPriceCents"].as_i64()? != unit || nonneg(&line["lineCents"])? != line_cents ||
+                    exact_i64(&lot["originalQuantity"])? != qty || exact_i64(&lot["highestAppliedUnitPriceCents"])? != unit ||
+                    exact_i64(&lot["originalUnitPriceCents"])? != unit || nonneg(&line["lineCents"])? != line_cents ||
                     nonneg(&lot["outstandingCents"])? > line_cents { return None; }
                 total = total.checked_add(line_cents)?;
             }
@@ -529,8 +602,8 @@ fn validate_cari(mem: &Kv, next: &Value, receipt: Option<&Value>) -> Option<()> 
     // Deftere yazılmış tutar ve diğer müşterilerin tüm kayıtları sabit kalır.
     let mut allocated = 0i64;
     for (before,after) in before_entries.iter().zip(entries) {
-        if before == after { continue; }
-        if &before["customerId"] != customer_id || before["type"] != "payment" { return None; }
+        if json_equivalent(before, after) { continue; }
+        if !json_equivalent(&before["customerId"], customer_id) || before["type"] != "payment" { return None; }
         same_except(before, after, &["details"])?;
         same_except(&before["details"], &after["details"], &["unallocatedCreditCents","allocations"])?;
         let prev = nonneg(&before["details"]["unallocatedCreditCents"])?;
@@ -538,15 +611,15 @@ fn validate_cari(mem: &Kv, next: &Value, receipt: Option<&Value>) -> Option<()> 
         if remaining > prev { return None; }
         let prior = before["details"]["allocations"].as_array()?;
         let next = after["details"]["allocations"].as_array()?;
-        if !next.starts_with(prior) { return None; }
+        if !starts_with_values(next, prior) { return None; }
         let append_total = next[prior.len()..].iter().try_fold(0i64, |sum,allocation| sum.checked_add(nonneg(&allocation["appliedCents"])?))?;
         if append_total != prev-remaining { return None; }
         allocated = allocated.checked_add(append_total)?;
     }
     let mut lot_decrease = 0i64;
     for (before,after) in before_lots.iter().zip(lots) {
-        if before == after { continue; }
-        if &before["customerId"] != customer_id || !before["closedAt"].is_null() { return None; }
+        if json_equivalent(before, after) { continue; }
+        if !json_equivalent(&before["customerId"], customer_id) || !before["closedAt"].is_null() { return None; }
         same_except(before,after,&["outstandingCents","closedAt"])?;
         let remaining = nonneg(&after["outstandingCents"])?;
         let prior = nonneg(&before["outstandingCents"])?;
@@ -580,6 +653,91 @@ mod tests {
             if let Some(raw) = op.val { mem.insert(op.key,raw); }
             else { mem.remove(&op.key); }
         }
+    }
+
+    fn cash_receipt(unit: i64) -> Value {
+        json!({"id":"sentetik-1","at":1234,"d":"27.11.2026","total":unit,"paid":unit,
+            "change":0,"paymentMethod":"cash","customerId":null,"items":[
+                {"b":"830001","n":"Örnek ürün","p":unit,"q":1,"totalCents":unit*100,"k":20}]})
+    }
+
+    #[test]
+    fn integral_numeric_equivalence_preserves_real_changes_and_large_ids() {
+        assert!(json_equivalent(&json!([{"p":60.0,"items":[12.25,-2.0,0.0]}]),
+            &json!([{"p":60,"items":[12.25,-2,0]}])));
+        assert!(!json_equivalent(&json!({"p":60.01}), &json!({"p":60})));
+        assert!(!json_equivalent(&json!({"items":[60,61]}), &json!({"items":[61,60]})));
+        assert!(!json_equivalent(&json!(9_007_199_254_740_992u64), &json!(9_007_199_254_740_993u64)));
+        assert!(!json_equivalent(&json!(9_007_199_254_740_992.0), &json!(9_007_199_254_740_993u64)));
+        assert!(!json_equivalent(&json!(9_007_199_254_740_992.0), &json!(9_007_199_254_740_992u64)));
+    }
+
+    #[test]
+    fn clean_catalog_allows_daily_backup_and_sale_with_legacy_integral_floats() {
+        let mut mem = Kv::new();
+        let html = r#"const ULKER_URUNLER =[
+{"b":"830001","n":"Örnek ürün","p":60.0,"c":"İçecek","s":10.0,"stockTracked":true,"k":20.0}
+];"#;
+        let startup = startup_migrations(&mem, html, 123).unwrap();
+        apply(&mut mem, startup);
+        assert!(mem[PRODUCT].contains("\"p\":60.0"));
+        let mut frontend_product = read(&mem, PRODUCT).unwrap()[0].clone();
+        frontend_product["p"] = json!(60);
+        frontend_product["s"] = json!(10);
+        frontend_product["k"] = json!(20);
+        let daily = value_op(BACKUPS, json!([{"products":[frontend_product],"sales":[],"heldSales":[]}]));
+        assert!(authorize(&mem, &[daily], false).is_ok());
+        // A shadow write can be queued separately from its primary value.
+        let shadow = value_op("koc-prods-shadow", json!([frontend_product]));
+        assert!(authorize(&mem, &[shadow], false).is_ok());
+        let historical = json!({"id":99,"total":60,"items":[{"p":60,"q":1}]});
+        mem.insert(SALE.into(), r#"[{"id":99.0,"total":60.0,"items":[{"p":60.0,"q":1.0}]}]"#.into());
+        let sales = json!([cash_receipt(60),historical]);
+        frontend_product["s"] = json!(9);
+        let ops = [value_op(SALE, sales.clone()), value_op(PRODUCT, json!([frontend_product]))];
+        assert!(authorize(&mem, &ops, false).is_ok());
+        frontend_product["p"] = json!(60.01);
+        let price_change = [value_op(SALE, sales), value_op(PRODUCT, json!([frontend_product]))];
+        assert!(authorize(&mem, &price_change, false).is_err());
+    }
+
+    #[test]
+    fn queued_backup_matches_one_coherent_state_without_bypassing_held_rules() {
+        let mut mem = Kv::new();
+        mem.insert(HELD.into(), r#"[{"id":"held-old","cart":[{"p":60.0}]}]"#.into());
+        let before_held = json!([{"id":"held-old","cart":[{"p":60}]}]);
+        let after_held = json!([{"id":"held-old","cart":[{"p":60}]},{"id":"held-new","cart":[]}]);
+        let previous_backup = json!({"products":[],"sales":[],"heldSales":before_held,"detail":60.0});
+        apply(&mut mem, vec![value_op(BACKUPS, json!([previous_backup]))]);
+        let mut kept = previous_backup.clone();
+        kept["detail"] = json!(60);
+        let sales = json!([cash_receipt(60)]);
+        let before = json!({"products":[],"sales":[],"heldSales":before_held});
+        let after = json!({"products":[],"sales":sales,"heldSales":after_held});
+        let mixed = json!({"products":[],"sales":[],"heldSales":after_held});
+        let changes = |snapshot| [value_op(SALE,sales.clone()), value_op(HELD,after_held.clone()),
+            value_op(BACKUPS,json!([snapshot,kept]))];
+        assert!(authorize(&mem, &changes(before), false).is_ok());
+        assert!(authorize(&mem, &changes(after), false).is_ok());
+        assert!(authorize(&mem, &changes(mixed), false).is_err());
+        let invalid_held = json!([{"id":"held-new","cart":[]},{"id":"held-new","cart":[]}]);
+        let invalid_snapshot = json!({"products":[],"sales":[],"heldSales":invalid_held});
+        let invalid = [value_op(HELD,invalid_held), value_op(BACKUPS,json!([invalid_snapshot,kept]))];
+        assert!(authorize(&mem, &invalid, false).is_err());
+    }
+
+    #[test]
+    fn queued_backup_cannot_mix_a_new_cari_with_an_old_held_state() {
+        let mem = Kv::new();
+        let mut after_cari = empty_cari();
+        after_cari["customers"] = json!([{"id":"new-cari","name":"Örnek cari","active":true}]);
+        let held = json!([{"id":"held-new","cart":[]}]);
+        let mixed = json!({"products":[],"sales":[],"heldSales":[],"cariState":after_cari});
+        let post = json!({"products":[],"sales":[],"heldSales":held,"cariState":after_cari});
+        let changes = |snapshot| [value_op(HELD, held.clone()), value_op(CARI, after_cari.clone()),
+            value_op(BACKUPS, json!([snapshot]))];
+        assert!(authorize(&mem, &changes(post), false).is_ok());
+        assert!(authorize(&mem, &changes(mixed), false).is_err());
     }
 
     #[test]
@@ -625,7 +783,11 @@ mod tests {
         paid["lastId"] = json!(5);
         paid["entries"].as_array_mut().unwrap().push(payment);
         paid["lots"][0]["outstandingCents"] = json!(800);
-        apply(&mut mem,vec![value_op(CARI,post)]);
+        let mut previous = post;
+        previous["customers"][0]["riskLimit"] = json!(0.0);
+        previous["entries"][0]["debitCents"] = json!(1000.0);
+        previous["lots"][0]["outstandingCents"] = json!(1000.0);
+        apply(&mut mem,vec![value_op(CARI,previous)]);
         assert!(authorize(&mem,&[value_op(CARI,paid)],false).is_ok());
     }
 

@@ -55,6 +55,68 @@
     check(denied, 'Kasiyerin yerel yazma girişimi reddedilmedi: ' + key);
   }
 
+  function makePricePdf() {
+    const stream = 'BT /F1 12 Tf 40 740 Td (' + barcode + ') Tj 180 0 Td (25,50 TL) Tj ET\n';
+    const objects = [
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Count 1 /Kids [3 0 R] >>',
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+      '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+      '<< /Length ' + stream.length + ' >>\nstream\n' + stream + 'endstream'
+    ];
+    // Belgenin tamamı ASCII olduğu için karakter ve bayt konumları eşit.
+    let text = '%PDF-1.4\n';
+    const offsets = [];
+    objects.forEach((object, index) => {
+      offsets.push(text.length);
+      text += (index + 1) + ' 0 obj\n' + object + '\nendobj\n';
+    });
+    const xref = text.length;
+    text += 'xref\n0 6\n0000000000 65535 f \n';
+    for (const offset of offsets) text += String(offset).padStart(10, '0') + ' 00000 n \n';
+    text += 'trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n' + xref + '\n%%EOF\n';
+    return new File([new TextEncoder().encode(text)], 'Prova.pdf', { type: 'application/pdf' });
+  }
+
+  async function verifyLocalPdf() {
+    openPriceUpdateWizard();
+    click('#pwBtn-pdf');
+    const input = document.getElementById('wizPdfFile');
+    check(input, 'PDF fiyat dosyası alanı bulunamadı.');
+    const selection = new DataTransfer();
+    selection.items.add(makePricePdf());
+    input.files = selection.files;
+
+    let workerReplied = false;
+    const NativeWorker = window.Worker;
+    window.Worker = class extends NativeWorker {
+      constructor(url, options) {
+        super(url, options);
+        const source = new URL(url, location.href);
+        if (source.origin === location.origin && source.pathname.endsWith('/legacy/build/pdf.worker.min.mjs')) {
+          this.addEventListener('message', () => { workerReplied = true; });
+        }
+      }
+    };
+    try {
+      await processPdfForPrices();
+      const review = document.getElementById('pdfReviewOverlay');
+      const [item] = window._pdfReviewRows || [];
+      check(review && item?.matched && item.barcode === barcode && item.pdfPrice === 25.5 &&
+        review.textContent.includes('25,50 ₺'), 'PDF önizlemesinde barkod ile 25,50 TL bulunamadı.');
+      check(workerReplied, 'Yerel PDF.js worker dosyası yanıt vermedi.');
+      assertCsp();
+      const cancel = Array.from(review.querySelectorAll('button')).find(button => button.textContent === 'İptal');
+      check(cancel, 'PDF önizlemesi iptal düğmesi bulunamadı.');
+      cancel.click();
+      check(!document.getElementById('pdfReviewOverlay') && product().p === 12.8,
+        'PDF önizlemesi kapatılmadı veya katalog fiyatı değişti.');
+      return { pdfPrice: item.pdfPrice, pdfWorker: true };
+    } finally {
+      window.Worker = NativeWorker;
+    }
+  }
+
   async function verifyPin() {
     check((await window.kocAdmin.status()).remainingMs === 0, 'Kasa başlangıçta kilitli olmalı.');
     await assertDeniedWrite('koc-business-settings', { ...businessSettings, name: 'Prova - değişmemeli' });
@@ -84,9 +146,11 @@
     pinDigits('2468');
     await until(() => isAdmin(), 'Yeni PIN arayüzde açılmadı.');
     check((await window.kocAdmin.status()).remainingMs > 0, 'Yeni PIN ile yerel oturum açılmadı.');
+    const pdf = await verifyLocalPdf();
     click('#lockBtn');
     await until(async () => (await window.kocAdmin.status()).remainingMs === 0, 'Yeni PIN oturumu kilitlenmedi.');
     switchTab('sale');
+    return pdf;
   }
 
   function scan(quantity) {
@@ -148,7 +212,7 @@
       check(sales.length === 0 && product().s === 10, 'İlk prova profili boş olmalı.');
       const cash = await cashSale(3, '38,40');
       check(product().s === 7, 'Nakit satış stoktan üç ürün düşmeli.');
-      await verifyPin();
+      const pdf = await verifyPin();
       await invoke('test_delay_next_write', { ms: 2000 });
       scan(1);
       click('.btn-pay');
@@ -160,7 +224,7 @@
       assertCsp();
       // Başarı kaydı kapanış talebinden önce yazılır. Koşucu aynı işlemin
       // çıkıştan sonra gerçekten diskte olduğunu ayrıca denetler.
-      await note('pass', { ...startup, ...cash, pinChanged: true, closeWhileWriting: true });
+      await note('pass', { ...startup, ...cash, ...pdf, pinChanged: true, closeWhileWriting: true });
       await invoke('test_close');
       return;
     }

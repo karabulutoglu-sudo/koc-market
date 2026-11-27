@@ -38,6 +38,7 @@ function newProfile(name, sample = {}) {
   };
   const kv = Object.fromEntries(Object.entries(initial).map(([key,value]) => [key,JSON.stringify(value)]));
   kv['koc-admin-pin'] = '1234';
+  kv['koc-son-yedek'] = String(Date.now());
   fs.writeFileSync(path.join(dir,'koc-data.json'),JSON.stringify(kv),{flag:'wx'});
   return dir;
 }

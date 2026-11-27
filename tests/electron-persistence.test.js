@@ -46,7 +46,10 @@ function setup(directory, options = {}) {
   };
   const context = { require: getDependency, __dirname:path.join(__dirname,'..'), structuredClone, console: { log() {}, error() {} } };
   vm.createContext(context);
-  vm.runInContext(main + '\nsetupDataStore();', context);
+  const startup = options.sqliteOnly
+    ? "dataFilePath = path.join(app.getPath('userData'), 'koc-data.json'); dbFilePath = path.join(app.getPath('userData'), 'kocmarket.db'); initSqlite();"
+    : 'setupDataStore();';
+  vm.runInContext(main + '\n' + startup, context);
   vm.runInContext(preload, context);
   return { ...renderer, evaluate: script => vm.runInContext(script, context), close: () => {
     vm.runInContext('if (db) { db.close(); db = null; }', context);
@@ -182,9 +185,9 @@ test('Electron recovers a fallback sale, stock and credit in the same SQLite tra
   assert.equal(JSON.parse(JSON.parse(pending)[fallbackKey]).version, 1);
   assert.equal(fallback.kocStore.read(fallbackKey), null);
 
-  const merged = setup(directory, { Database });
+  const merged = setup(directory, { Database, sqliteOnly:true });
   try {
-    assert.deepEqual({ ...merged.kocDB.getAll() }, scenario(true));
+    assert.deepEqual(JSON.parse(merged.evaluate('JSON.stringify(memStore)')), scenario(true));
   } finally { merged.close(); }
 
   // SQLite işleminden sonra, ayna yenilemesi gerçekleşmeden program kapanabilir.
@@ -230,4 +233,25 @@ test('Electron recovery preserves both sources if SQLite and JSON changed the sa
     assert.equal(check.prepare("SELECT value FROM kv WHERE key='koc-prods'").get().value, 'changed in SQLite');
   } finally { check.close(); }
   assert.equal(fs.readdirSync(path.join(directory,'backups')).filter(name => !oldBackups.includes(name)).length, 2);
+});
+
+test('Electron rejects a stale mirror after a recent SQLite sale and can use it once refreshed', t => {
+  const DatabaseSync = loadSqlite();
+  if (!DatabaseSync) return t.skip('Bu Node sürümünde node:sqlite yok.');
+  const Database = databaseAdapter(DatabaseSync);
+  const directory = testDirectory(t, scenario(false));
+  const file = path.join(directory, 'koc-data.json');
+  const sqlite = setup(directory, { Database });
+  const before = fs.readFileSync(file, 'utf8');
+  writeScenario(sqlite, true);
+  sqlite.close();
+  assert.equal(fs.readFileSync(file,'utf8'), before);
+  assert.equal(fs.readFileSync(path.join(directory,'koc-json-mirror-state'),'utf8'), 'dirty');
+  assert.throws(() => setup(directory), /güncelliği doğrulanamadı/);
+  assert.equal(fs.readFileSync(file,'utf8'), before);
+
+  const recovery = setup(directory, { Database });
+  recovery.close();
+  const fallback = setup(directory);
+  assert.deepEqual({ ...fallback.kocDB.getAll() }, scenario(true));
 });

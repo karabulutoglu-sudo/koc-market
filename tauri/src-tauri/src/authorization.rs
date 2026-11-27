@@ -16,7 +16,7 @@ const BACKUPS: &str = "koc-backups";
 const CATEGORY: &str = "koc-category-tree";
 const STOCK: &str = "koc-operational-settings";
 const MARKER: &str = "koc-atomic-last-operation";
-const PIN_ROUNDS: NonZeroU32 = NonZeroU32::new(210_000).unwrap();
+fn pin_rounds() -> NonZeroU32 { NonZeroU32::new(210_000).expect("PIN iteration count") }
 const ADMIN_REQUIRED: &str = "Yönetici yetkisi gerekli veya kayıt geçersiz.";
 
 #[derive(Default)]
@@ -65,7 +65,7 @@ impl AdminSession {
                 let (salt, expected) = fields.split_once(':').ok_or("PIN kaydı geçersiz.")?;
                 let salt = unhex::<16>(salt).ok_or("PIN kaydı geçersiz.")?;
                 let expected = unhex::<32>(expected).ok_or("PIN kaydı geçersiz.")?;
-                valid_pin(pin) && pbkdf2::verify(pbkdf2::PBKDF2_HMAC_SHA256, PIN_ROUNDS, &salt, pin.as_bytes(), &expected).is_ok()
+                valid_pin(pin) && pbkdf2::verify(pbkdf2::PBKDF2_HMAC_SHA256, pin_rounds(), &salt, pin.as_bytes(), &expected).is_ok()
             }
             None => valid_pin(pin) && pin == stored.unwrap_or("1234"),
         };
@@ -116,7 +116,7 @@ pub fn pin_ops(pin: &str) -> Result<Vec<Op>, String> {
     let mut salt = [0; 16];
     SystemRandom::new().fill(&mut salt).map_err(|_| "PIN tuzu oluşturulamadı.")?;
     let mut digest = [0; 32];
-    pbkdf2::derive(pbkdf2::PBKDF2_HMAC_SHA256, PIN_ROUNDS, &salt, pin.as_bytes(), &mut digest);
+    pbkdf2::derive(pbkdf2::PBKDF2_HMAC_SHA256, pin_rounds(), &salt, pin.as_bytes(), &mut digest);
     let raw = format!("pbkdf2:{}:{}", hex(&salt), hex(&digest));
     let mut ops = vec![set(PIN, raw)];
     ops.extend(RECOVERY.iter().map(|suffix| remove(format!("{PIN}{suffix}"))));
@@ -149,13 +149,15 @@ fn normalized_barcode(barcode: &str) -> String {
 
 pub fn startup_migrations(mem: &Kv, html: &str, at: i64) -> Result<Vec<Op>, String> {
     let mut ops = Vec::new();
-    let existing = [PRODUCT, "koc-prods-shadow", "koc-prods-emergency"].iter()
-        .find_map(|key| read(mem, key).filter(Value::is_array));
+    let existing = recover(mem, PRODUCT, Value::is_array, &mut ops)?;
+    let sales = recover(mem, SALE, Value::is_array, &mut ops)?;
+    let held = recover(mem, HELD, Value::is_array, &mut ops)?;
+    recover(mem, CARI, Value::is_object, &mut ops)?;
+    recover(mem, "koc-business-settings", Value::is_object, &mut ops)?;
+    recover(mem, "koc-user-settings", Value::is_object, &mut ops)?;
     let mut products = match existing.clone() {
         Some(value) => value,
-        None if [PRODUCT, "koc-prods-shadow", "koc-prods-emergency"].iter().any(|key| mem.contains_key(*key)) =>
-            return Err("Ürün verisi okunamadı. Yedekle doğrulama gerekli.".into()),
-        None if mem.contains_key("koc-ulker-v6-yuklendi") || mem.contains_key(SALE) || mem.contains_key(HELD) => json!([]),
+        None if mem.contains_key("koc-ulker-v6-yuklendi") || sales.is_some() || held.is_some() => json!([]),
         None => {
             let seed = html.split_once("const ULKER_URUNLER =[").and_then(|(_, tail)| tail.split_once("\n];"));
             let seed = seed.ok_or("Paketin başlangıç kataloğu bulunamadı.")?.0;
@@ -172,13 +174,11 @@ pub fn startup_migrations(mem: &Kv, html: &str, at: i64) -> Result<Vec<Op>, Stri
     let fill_vat = !mem.contains_key("koc-kdv-migrated-v1");
     let fix_tobacco = !mem.contains_key("koc-kdv-sigara-fix-v10");
     let migrate_tree = !mem.contains_key("koc-category-tree-native-v1");
-    let default_vat = read(mem, STOCK).and_then(|v| v.get("defaultVat").cloned()).filter(Value::is_number).unwrap_or(json!(20));
-    let old_tree = read(mem, CATEGORY);
+    let settings = recover(mem, STOCK, Value::is_object, &mut ops)?;
+    let default_vat = settings.and_then(|v| v.get("defaultVat").cloned()).filter(Value::is_number).unwrap_or(json!(20));
+    let old_tree = recover(mem, CATEGORY, Value::is_object, &mut ops)?;
     let mut categories = old_tree.as_ref().and_then(|v| v["categories"].as_array()).cloned().unwrap_or_default();
     let rows = products.as_array_mut().ok_or("Başlangıç kataloğu geçersiz.")?;
-    if migrate_tree && old_tree.is_none() && mem.contains_key(CATEGORY) {
-        return Err("Kategori verisi okunamadı. Yedekle doğrulama gerekli.".into());
-    }
     for p in rows.iter_mut().filter(|v| v.is_object()) {
         if clean {
             if let Some(b) = p["b"].as_str() {
@@ -238,7 +238,7 @@ pub fn startup_migrations(mem: &Kv, html: &str, at: i64) -> Result<Vec<Op>, Stri
         if let Some(before) = existing {
             let mut backups = read(mem, BACKUPS).and_then(|b| b.as_array().cloned()).unwrap_or_default();
             let snapshot = json!({"ts":at,"reason":"Yerel başlangıç bakımı öncesi","products":before,
-                "sales":read(mem, SALE).unwrap_or(json!([])), "heldSales":read(mem, HELD).unwrap_or(json!([])),
+                "sales":sales.unwrap_or(json!([])), "heldSales":held.unwrap_or(json!([])),
                 "categoryState": old_tree, "v":4});
             let mut snapshot = snapshot.as_object().unwrap().clone();
             snapshot.retain(|_, value| !value.is_null());
@@ -248,6 +248,22 @@ pub fn startup_migrations(mem: &Kv, html: &str, at: i64) -> Result<Vec<Op>, Stri
         }
     }
     Ok(ops)
+}
+
+fn recover(mem: &Kv, key: &str, valid: fn(&Value) -> bool, ops: &mut Vec<Op>) -> Result<Option<Value>, String> {
+    let keys = [key.to_string(), format!("{key}-shadow"), format!("{key}-emergency")];
+    for candidate in &keys {
+        if let Some(value) = read(mem, candidate).filter(valid) {
+            if candidate != key {
+                ops.push(set(key,mem.get(candidate).unwrap().clone()));
+            }
+            return Ok(Some(value));
+        }
+    }
+    if keys.iter().any(|candidate| mem.contains_key(candidate)) {
+        return Err(format!("Kayıtlı veri okunamadı: {key}"));
+    }
+    Ok(None)
 }
 
 fn core_key(key: &str) -> bool {
@@ -272,14 +288,19 @@ pub fn authorize(mem: &Kv, ops: &[Op], is_admin: bool) -> Result<(), String> {
 fn authorize_inner(mem: &Kv, ops: &[Op], is_admin: bool) -> Option<()> {
     let mut writes = HashMap::new();
     for op in ops {
+        if op.op == "del" && op.val.is_none() && is_admin && core_key(&op.key) {
+            if writes.insert(op.key.as_str(), None).is_some() { return None; }
+            continue;
+        }
         let raw = match (op.op.as_str(), op.val.as_deref()) {
             ("set", Some(raw)) => raw,
             _ => return None,
         };
-        if pin_key(&op.key) || writes.insert(op.key.as_str(), raw).is_some() { return None; }
+        if pin_key(&op.key) || writes.insert(op.key.as_str(), Some(raw)).is_some() { return None; }
     }
     let mut records = HashMap::new();
-    for (&key, &raw) in &writes {
+    for (&key, raw) in &writes {
+        let Some(raw) = *raw else { continue; };
         if core_key(key) {
             let value = raw_json(Some(raw))?;
             if matches!(key, PRODUCT | SALE | HELD | BACKUPS) && !value.is_array() { return None; }
@@ -293,7 +314,7 @@ fn authorize_inner(mem: &Kv, ops: &[Op], is_admin: bool) -> Option<()> {
         } else if !cashier_trace(key, raw) {
             let (base, suffix) = RECOVERY.into_iter().find_map(|suffix| key.strip_suffix(suffix).map(|base| (base,suffix)))?;
             if !core_key(base) || base == BACKUPS { return None; }
-            let current = writes.get(base).copied().or_else(|| mem.get(base).map(String::as_str));
+            let current = writes.get(base).copied().unwrap_or_else(|| mem.get(base).map(String::as_str));
             if suffix == "-emergency-ts" {
                 if raw.parse::<u64>().is_err() { return None; }
             } else if current != Some(raw) {
@@ -408,7 +429,9 @@ fn valid_stock_delta(mem: &Kv, old: &[Value], new: &[Value], sale: &Value) -> bo
     if settings["trackStock"] != json!(false) {
         let mut quantities = HashMap::new();
         for item in sale["items"].as_array().unwrap() {
-            *quantities.entry(item["b"].as_str()).or_insert(0i64) += item["q"].as_i64().unwrap();
+            let sum = quantities.entry(item["b"].as_str()).or_insert(0i64);
+            let Some(next) = sum.checked_add(item["q"].as_i64().unwrap()) else { return false; };
+            *sum = next;
         }
         for p in expected.iter_mut().filter(|p| p.is_object()) {
             let stock = p["s"].as_i64().unwrap_or_default();
@@ -545,4 +568,98 @@ fn validate_cari(mem: &Kv, next: &Value, receipt: Option<&Value>) -> Option<()> 
 
 fn new_counter(cari: &Value) -> Option<i64> {
     if cari["lastId"].is_null() { Some(0) } else { nonneg(&cari["lastId"]) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn value_op(key: &str, value: Value) -> Op { set(key,value.to_string()) }
+    fn apply(mem: &mut Kv, ops: Vec<Op>) {
+        for op in ops {
+            if let Some(raw) = op.val { mem.insert(op.key,raw); }
+            else { mem.remove(&op.key); }
+        }
+    }
+
+    #[test]
+    fn cashier_receipt_and_stock_are_validated_as_one_change() {
+        let product = json!({"b":"830001","n":"Örnek ürün","p":12.8,"c":"İçecek","s":10,"stockTracked":true,"k":20});
+        let mut mem = Kv::new();
+        apply(&mut mem,vec![value_op(PRODUCT,json!([product])),value_op(SALE,json!([]))]);
+        let item = json!({"b":"830001","n":"Örnek ürün","p":12.8,"q":3,"totalCents":3840,"k":20});
+        let sale = json!({"id":"sentetik-1","at":1234,"d":"27.11.2026","total":38.4,"paid":38.4,
+            "change":0,"paymentMethod":"cash","customerId":null,"items":[item]});
+        let mut remaining = product.clone();
+        remaining["s"] = json!(7);
+        let ops = vec![value_op(SALE,json!([sale])),value_op(PRODUCT,json!([remaining])),
+            set(MARKER,"sentetik-1")];
+        assert!(authorize(&mem,&ops,false).is_ok());
+        let mut priced = product;
+        priced["p"] = json!(3.0);
+        let changes = [value_op(PRODUCT,json!([priced]))];
+        assert!(authorize(&mem,&changes,false).is_err());
+        assert!(authorize(&mem,&changes,true).is_ok());
+        assert!(authorize(&mem,&[value_op(STOCK,json!({"trackStock":false}))],false).is_err());
+    }
+
+    #[test]
+    fn cashier_can_post_veresiye_with_exactly_one_matching_cari_entry() {
+        let customer = json!({"id":"customer-1","name":"Örnek cari","active":true,"riskLimit":0});
+        let old_state = json!({"schemaVersion":1,"lastId":1,"customers":[customer],"entries":[],"lots":[]});
+        let mut mem = Kv::new();
+        apply(&mut mem,vec![value_op(PRODUCT,json!([])),value_op(SALE,json!([])),value_op(CARI,old_state)]);
+        let sale = json!({"id":"sentetik-2","at":1000,"d":"27.11.2026","total":10,"paid":0,"change":0,
+            "customerId":"customer-1","paymentMethod":"cari","items":[{"b":"830001","n":"Örnek ürün","p":10,"q":1,"totalCents":1000,"k":20}]});
+        let entry = json!({"id":"entry-3","referenceId":"sentetik-2","type":"credit_sale","at":1000,"customerId":"customer-1",
+            "debitCents":1000,"creditCents":0,"balanceCents":1000,"details":{"items":[{"lotId":"lot-2","barcode":"830001",
+                "quantity":1,"unitPriceCents":1000,"lineCents":1000}]}});
+        let lot = json!({"id":"lot-2","saleId":"sentetik-2","customerId":"customer-1","barcode":"830001","originalQuantity":1,
+            "originalUnitPriceCents":1000,"highestAppliedUnitPriceCents":1000,"outstandingCents":1000,"closedAt":null});
+        let post = json!({"schemaVersion":1,"lastId":3,"customers":[customer],"entries":[entry],"lots":[lot]});
+        assert!(authorize(&mem,&[value_op(SALE,json!([sale])),value_op(CARI,post.clone())],false).is_ok());
+        let payment = json!({"id":"entry-5","referenceId":"payment-4","type":"payment","at":1100,"customerId":"customer-1",
+            "debitCents":0,"creditCents":200,"balanceCents":800,"details":{"unallocatedCreditCents":0,
+                "allocations":[{"lotId":"lot-2","appliedCents":200}]}});
+        let mut paid = post.clone();
+        paid["lastId"] = json!(5);
+        paid["entries"].as_array_mut().unwrap().push(payment);
+        paid["lots"][0]["outstandingCents"] = json!(800);
+        apply(&mut mem,vec![value_op(CARI,post)]);
+        assert!(authorize(&mem,&[value_op(CARI,paid)],false).is_ok());
+    }
+
+    #[test]
+    fn startup_normalizes_legacy_data_once_and_retains_previous_catalog() {
+        let product = json!({"b":" 830001 ", "n":"Örnek ürün", "p":12.8,"c":"Tütün","s":10,"k":20});
+        let mut mem = Kv::new();
+        apply(&mut mem,vec![value_op(PRODUCT,json!([product])),value_op("koc-sales-shadow",json!([{"id":12}]))]);
+        let ops = startup_migrations(&mem,"",123).unwrap();
+        apply(&mut mem,ops);
+        let products = read(&mem,PRODUCT).unwrap();
+        assert_eq!(products[0]["b"],"830001");
+        assert_eq!(products[0]["k"],0);
+        assert_eq!(products[0]["s"],10);
+        assert_eq!(read(&mem,SALE).unwrap()[0]["id"],12);
+        assert_eq!(read(&mem,BACKUPS).unwrap()[0]["products"][0],product);
+        assert!(startup_migrations(&mem,"",234).unwrap().is_empty());
+    }
+
+    #[test]
+    fn native_pin_keeps_old_identity_and_rate_limits() {
+        let mut mem = Kv::new();
+        apply(&mut mem,vec![set(PIN,"0944"), set("koc-admin-pin-shadow","0944")]);
+        let mut session = AdminSession::default();
+        let legacy = session.check(&mem,"0944").unwrap().unwrap();
+        apply(&mut mem,legacy.migration);
+        assert!(mem[PIN].starts_with("pbkdf2:"));
+        assert!(!mem.contains_key("koc-admin-pin-shadow"));
+        assert!(session.check(&mem,"0944").unwrap().is_some());
+        session.open();
+        assert!(session.authenticated());
+        session.lock();
+        for _ in 0..3 { assert!(session.check(&mem,"0000").unwrap().is_none()); }
+        assert!(session.status(false).retry_ms > 0);
+        assert!(session.check(&mem,"0944").unwrap().is_none());
+    }
 }

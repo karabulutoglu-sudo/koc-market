@@ -29,11 +29,15 @@ pub type Kv = HashMap<String, String>;
 static REPAIR_BACKUP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const FALLBACK_KEY: &str = "koc-native-json-fallback-v1";
 const FALLBACK_APPLIED: &str = "json_fallback_applied_v1";
+const MIRROR_STATE: &str = "koc-json-mirror-state";
+const MIRROR_DIRTY: &str = "dirty";
 
 #[derive(serde::Deserialize, serde::Serialize)]
 struct FallbackMarker {
     version: u32,
     baseline: Kv,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_digest: Option<String>,
 }
 
 struct JsonSnapshot {
@@ -184,6 +188,42 @@ fn latest_backup(dir: &Path, prefix: &str) -> Option<PathBuf> {
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+fn mirror_state(json_path: &Path) -> Result<Option<String>, String> {
+    match fs::read_to_string(json_path.with_file_name(MIRROR_STATE)) {
+        Ok(value) => Ok(Some(value)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!("JSON ayna durumu okunamadı: {err}")),
+    }
+}
+
+fn mark_mirror_dirty(json_path: &Path) -> Result<(), String> {
+    if mirror_state(json_path)?.as_deref() != Some(MIRROR_DIRTY) {
+        atomic_write(&json_path.with_file_name(MIRROR_STATE), MIRROR_DIRTY.as_bytes())
+            .map_err(|err| format!("SQLite ayna durumu işaretlenemedi: {err}"))?;
+    }
+    Ok(())
+}
+
+fn fallback_source_digest(
+    json_path: &Path, had_database: bool, snapshot: Option<&JsonSnapshot>,
+) -> Result<Option<String>, String> {
+    let state = mirror_state(json_path)?;
+    if let Some(clean) = state.as_deref().and_then(|state| state.strip_prefix("clean:")) {
+        let seen = snapshot.and_then(|s| match &s.marker {
+            Some(marker) => marker.source_digest.as_deref(),
+            None => Some(s.digest.as_str()),
+        });
+        if seen == Some(clean) {
+            return Ok(Some(clean.into()));
+        }
+    } else if state.is_none() && (!had_database || snapshot
+        .and_then(|s| s.marker.as_ref()).is_some_and(|marker| marker.source_digest.is_none())) {
+        // Ana motor kurulmadan önce başlamış bir JSON deposunun SQLite tabanı yoktur.
+        return Ok(None);
+    }
+    Err("SQLite açılamadı ve JSON aynasının güncelliği doğrulanamadı. Kayıtlar korundu; SQLite erişimi düzeltilmeli.".into())
 }
 
 fn read_json_snapshot(path: &Path) -> Result<Option<JsonSnapshot>, String> {
@@ -447,6 +487,7 @@ impl Store {
                 if had_database && snapshot.is_none() {
                     return Err("SQLite açılamadı ve geçerli JSON aynası yok. Eski kayıtlar korunuyor.".into());
                 }
+                let source_digest = fallback_source_digest(&json_path, had_database, snapshot.as_ref())?;
                 let (mut mem, marker) = snapshot.map(|s| (s.data, s.marker)).unwrap_or_default();
                 if !had_database && mem.is_empty() && marker.is_none() {
                     if let Some(src) = find_electron_source(electron_candidates, &dir.join("migration").join(stamp()), &dir)? {
@@ -458,6 +499,7 @@ impl Store {
                 let marker = marker.unwrap_or_else(|| FallbackMarker {
                     version: 1,
                     baseline: mem.iter().map(|(key, value)| (key.clone(), digest(value.as_bytes()))).collect(),
+                    source_digest,
                 });
                 let st = Store { dir, conn: None, mem, json_path, fallback_marker: Some(marker),
                     closed: false, pending_electron_ack: None };
@@ -516,6 +558,7 @@ impl Store {
         if legacy_mirror_contains_unsynced_sales(&merged, &snapshot.data)? {
             return Err("JSON satışları doğrulanmış SQLite sonucunda eksik kalacaktı. İki kaynak yedeklendi.".into());
         }
+        mark_mirror_dirty(&self.json_path)?;
         for key in sqlite.keys().filter(|key| !merged.contains_key(*key)) {
             tx.execute("DELETE FROM kv WHERE key=?1", [key]).map_err(|e| e.to_string())?;
         }
@@ -564,6 +607,7 @@ impl Store {
 
                 // 2) Tek transaction içinde taşı
                 let now = now_iso();
+                mark_mirror_dirty(&self.json_path)?;
                 let conn = self.conn.as_mut().unwrap();
                 let tx = conn.transaction().map_err(|e| e.to_string())?;
                 {
@@ -814,7 +858,11 @@ impl Store {
         if ops.iter().any(|op| op.key == FALLBACK_KEY) {
             return Err("Yerel kurtarma işareti değiştirilemez.".into());
         }
+        if ops.is_empty() {
+            return Ok(());
+        }
         if let Some(conn) = self.conn.as_mut() {
+            mark_mirror_dirty(&self.json_path)?;
             let now = now_iso();
             let tx = conn.transaction().map_err(|e| e.to_string())?;
             {
@@ -857,24 +905,36 @@ impl Store {
     /// Acil durum aynası: koc-data.json'u güncel tut (yalnızca SQLite modunda
     /// ve bellekte gerçek veri varken — boş veriyle asla ezme).
     pub fn refresh_mirror(&self) {
-        if self.conn.is_none() || !self.mem.contains_key("koc-prods") {
-            return;
+        if let Err(err) = self.synchronize_mirror() {
+            log_line(&self.dir, &format!("Acil durum aynası güncellenemedi: {err}"));
         }
-        match read_json_snapshot(&self.json_path) {
-            Ok(Some(snapshot)) if snapshot.marker.is_some()
-                && self.meta_get(FALLBACK_APPLIED).as_deref() != Some(snapshot.digest.as_str()) => {
-                log_line(&self.dir, "Uzlaştırılmamış JSON kaydı korunuyor; ayna güncellenmedi.");
-                return;
+    }
+
+    pub fn synchronize_mirror(&self) -> Result<(), String> {
+        if self.conn.is_none() || self.mem.is_empty() {
+            return Ok(());
+        }
+        if let Some(snapshot) = read_json_snapshot(&self.json_path)? {
+            if snapshot.marker.is_some()
+                && self.meta_get(FALLBACK_APPLIED).as_deref() != Some(snapshot.digest.as_str()) {
+                return Err("Uzlaştırılmamış JSON kaydı korunuyor; ayna güncellenmedi.".into());
             }
-            Err(err) => {
-                log_line(&self.dir, &format!("Mevcut JSON deposu korunuyor; ayna güncellenmedi: {err}"));
-                return;
+            let clean = format!("clean:{}", snapshot.digest);
+            if snapshot.marker.is_none() && snapshot.data == self.mem
+                && mirror_state(&self.json_path)?.as_deref() == Some(clean.as_str()) {
+                return Ok(());
             }
-            _ => {}
         }
-        if let Err(e) = self.persist_json() {
-            log_line(&self.dir, &format!("Acil durum aynası güncellenemedi: {e}"));
+        mark_mirror_dirty(&self.json_path)?;
+        let bytes = serde_json::to_vec(&self.mem).map_err(|err| err.to_string())?;
+        atomic_write(&self.json_path, &bytes).map_err(|err| err.to_string())?;
+        let saved = fs::read(&self.json_path).map_err(|err| err.to_string())?;
+        if saved != bytes {
+            return Err("Yazılan JSON aynası doğrulanamadı.".into());
         }
+        let clean = format!("clean:{}", digest(&saved));
+        atomic_write(&self.json_path.with_file_name(MIRROR_STATE), clean.as_bytes())
+            .map_err(|err| err.to_string())
     }
 
     /// Düzgün kapanış: aynayı tazele, WAL'ı ana dosyaya işle, bağlantıyı kapat.
@@ -949,7 +1009,7 @@ mod repair_tests {
         let conn = if sqlite { Some(Store::open_sqlite(&dir.0).unwrap()) } else { None };
         let mut store = Store {
             dir: dir.0.clone(), conn, mem: Kv::new(), json_path: dir.0.join("koc-data.json"),
-            fallback_marker: if sqlite { None } else { Some(FallbackMarker { version: 1, baseline: Kv::new() }) },
+            fallback_marker: if sqlite { None } else { Some(FallbackMarker { version: 1, baseline: Kv::new(), source_digest: None }) },
             closed: false, pending_electron_ack: None,
         };
         let products = json!([{"b":"8691234567890","n":"ÃœLKER ÅžEKER","p":12.5,"s":9,"c":"GIDA","k":20}]);
@@ -1319,6 +1379,29 @@ mod repair_tests {
         assert_eq!(fs::read(&json_path).unwrap(), pending);
         assert_eq!(read_sqlite_kv(&Store::open_sqlite(&dir.0).unwrap()).unwrap(), sql);
         assert_eq!(fs::read_dir(dir.0.join("backups")).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn recently_committed_sqlite_sale_blocks_fallback_until_mirror_is_current() {
+        let dir = TestDir::new();
+        let (mut sqlite, _) = Store::init(dir.0.clone(), &[]).unwrap();
+        write_scenario(&mut sqlite, &scenario_keys(false));
+        sqlite.synchronize_mirror().unwrap();
+        let json_path = dir.0.join("koc-data.json");
+        let old_mirror = fs::read(&json_path).unwrap();
+        let latest = scenario_keys(true);
+        write_scenario(&mut sqlite, &latest);
+        drop(sqlite); // Normal uygulama kapanışındaki ayna yenilemesini atla.
+        assert_eq!(mirror_state(&json_path).unwrap().as_deref(), Some(MIRROR_DIRTY));
+        let err = Store::init_with_sqlite(dir.0.clone(), &[], unavailable_sqlite).err().unwrap();
+        assert!(err.contains("güncelliği doğrulanamadı"), "{err}");
+        assert_eq!(fs::read(&json_path).unwrap(), old_mirror);
+        let (sqlite, _) = Store::init(dir.0.clone(), &[]).unwrap();
+        assert_preserved(&sqlite, &latest);
+        sqlite.synchronize_mirror().unwrap();
+        drop(sqlite);
+        let (fallback, _) = Store::init_with_sqlite(dir.0.clone(), &[], unavailable_sqlite).unwrap();
+        assert_preserved(&fallback, &latest);
     }
 
     fn migration_unicode_fixture() -> Kv {

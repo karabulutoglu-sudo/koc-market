@@ -17,6 +17,7 @@ function fixtures() {
   const customer = { id: customerId, name: customerName };
   const at = Date.now();
   return {
+    'koc-son-yedek': String(at),
     'koc-ulker-v6-yuklendi': '1', 'koc-kat-birlesim-v1': '1',
     'koc-kdv-migrated-v1': '1', 'koc-kdv-sigara-fix-v10': '1',
     'koc-prods': JSON.stringify([

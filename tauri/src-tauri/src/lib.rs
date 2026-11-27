@@ -191,7 +191,7 @@ fn encoding_repair_cancel(state: tauri::State<'_, AppState>) -> Result<(), Strin
 }
 
 /// Tanı bilgisi (Ayarlar ekranı veya konsol için): motor, klasör, geçiş.
-#[tauri::command]
+#[tauri::command(async)]
 fn kv_info(state: tauri::State<'_, AppState>) -> Value {
     let guard = state.store.lock().unwrap();
     let report = state.report.lock().unwrap().clone();
@@ -384,17 +384,18 @@ fn show_close_blocked(app: &AppHandle, generation: u32, reason: &str) {
         "write_failed" => "Son kayıt başarısız oldu. Kasaya dönerek işlemi yeniden deneyebilirsiniz.",
         _ => "Kasa ekranından disk onayı alınamadı.",
     };
-    const RETRY: &str = "Bekle ve Tekrar Dene";
+    let retry_after_wait = reason != "write_failed";
+    let retry = if retry_after_wait { "Bekle ve Tekrar Dene" } else { "Kasaya Dön ve Yeniden Dene" };
     const FORCE: &str = "Yine de Kapat";
-    const STAY: &str = "Kasaya Dön";
+    const STAY: &str = "Vazgeç";
     let (details, buttons) = match intent {
         Intent::Close => (
             "Şimdi kapatırsanız bekleyen son işlem kaybolabilir.",
-            MessageDialogButtons::YesNoCancelCustom(RETRY.into(), FORCE.into(), STAY.into()),
+            MessageDialogButtons::YesNoCancelCustom(retry.into(), FORCE.into(), STAY.into()),
         ),
         Intent::Update => (
             "Güncelleme, kayıtlar doğrulanıncaya kadar kurulmayacak.",
-            MessageDialogButtons::OkCancelCustom(RETRY.into(), STAY.into()),
+            MessageDialogButtons::OkCancelCustom(retry.into(), STAY.into()),
         ),
     };
     let mut dialog = app.dialog()
@@ -406,7 +407,6 @@ fn show_close_blocked(app: &AppHandle, generation: u32, reason: &str) {
         dialog = dialog.parent(&window);
     }
     let app = app.clone();
-    let retry_after_wait = reason != "write_failed";
     dialog.show_with_result(move |answer| {
         let forced = answer == MessageDialogResult::Custom(FORCE.into()) && intent == Intent::Close;
         if app.state::<AppState>().closing.end_prompt(generation, forced).is_none() {
@@ -415,7 +415,7 @@ fn show_close_blocked(app: &AppHandle, generation: u32, reason: &str) {
         if forced {
             // Devam eden yerel işlemin atomik disk yazımı bitene dek bekler.
             std::thread::spawn(move || finish_and_exit(&app, Intent::Close));
-        } else if retry_after_wait && answer == MessageDialogResult::Custom(RETRY.into()) {
+        } else if retry_after_wait && answer == MessageDialogResult::Custom(retry.into()) {
             request_flush_and_exit(&app, intent);
         } else if intent == Intent::Update {
             #[cfg(not(debug_assertions))]
@@ -560,6 +560,7 @@ pub fn run() {
                     &store.mem, include_str!("../../../index.html"), chrono::Utc::now().timestamp_millis()
                 )?;
                 if !migrations.is_empty() { store.apply(&migrations)?; }
+                store.synchronize_mirror()?;
                 Ok((store, report))
             }) {
                 Ok((st, report)) => {

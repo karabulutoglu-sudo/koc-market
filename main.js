@@ -30,6 +30,7 @@ let txApply = null
 const commitMarker = 'koc-atomic-last-operation'
 const fallbackKey = 'koc-native-json-fallback-v1'
 const fallbackAppliedKey = 'json_fallback_applied_v1'
+const mirrorStateName = 'koc-json-mirror-state'
 let fallbackMarker = null
 
 // ── Hata günlüğü: userData\logs\db-YYYY-MM-DD.log ──
@@ -46,6 +47,20 @@ function logError(msg) {
 
 function digest(value) {
   return createHash('sha256').update(value).digest('hex')
+}
+
+function mirrorStatePath() { return path.join(path.dirname(dataFilePath), mirrorStateName) }
+
+function readMirrorState() {
+  try { return fs.readFileSync(mirrorStatePath(), 'utf8') }
+  catch (error) {
+    if (error.code === 'ENOENT') return null
+    throw error
+  }
+}
+
+function markMirrorDirty() {
+  if (readMirrorState() !== 'dirty') atomicWriteText(mirrorStatePath(), 'dirty')
 }
 
 function readJsonSnapshot() {
@@ -76,21 +91,30 @@ function readJsonSnapshot() {
 function loadStoreFromDisk(hadDatabase) {
   const snapshot = readJsonSnapshot()
   if (hadDatabase && !snapshot) throw new Error('SQLite açılamadı ve geçerli JSON aynası yok. Eski kayıtlar korunuyor.')
+  const state = readMirrorState()
+  let sourceDigest
+  if (state?.startsWith('clean:')) {
+    const seen = snapshot?.marker ? snapshot.marker.source_digest : snapshot?.digest
+    sourceDigest = state.slice('clean:'.length)
+    if (seen !== sourceDigest) throw new Error('JSON aynasının güncelliği doğrulanamadı. Kayıtlar korundu.')
+  } else if (state !== null || (hadDatabase && (!snapshot?.marker || snapshot.marker.source_digest != null))) {
+    throw new Error('SQLite açılamadı ve JSON aynasının güncelliği doğrulanamadı. Kayıtlar korundu; SQLite erişimi düzeltilmeli.')
+  }
   memStore = snapshot?.data || Object.create(null)
   fallbackMarker = snapshot?.marker || {
-    version: 1, baseline: Object.fromEntries(Object.entries(memStore).map(([key, value]) => [key, digest(value)]))
+    version: 1, baseline: Object.fromEntries(Object.entries(memStore).map(([key, value]) => [key, digest(value)])),
+    source_digest: sourceDigest
   }
 }
 
 // Atomik yazım (yalnızca JSON fallback modunda kullanılır):
 // önce .tmp dosyasına yaz + fsync, sonra rename et.
-function atomicWriteJson(filename, data) {
+function atomicWriteText(filename, text) {
   const tmp = filename + '.' + randomUUID() + '.tmp'
-  const json = JSON.stringify(data)
   try {
     const fd = fs.openSync(tmp, 'wx')
     try {
-      fs.writeFileSync(fd, json, 'utf8')
+      fs.writeFileSync(fd, text, 'utf8')
       fs.fsyncSync(fd)
     } finally {
       fs.closeSync(fd)
@@ -104,7 +128,7 @@ function atomicWriteJson(filename, data) {
 
 function persistStoreToDisk(next = memStore) {
   const data = fallbackMarker ? { ...next, [fallbackKey]: JSON.stringify(fallbackMarker) } : next
-  atomicWriteJson(dataFilePath, data)
+  atomicWriteText(dataFilePath, JSON.stringify(data))
 }
 
 function readSqliteSnapshot() {
@@ -197,6 +221,7 @@ function reconcileJsonFallback() {
       merged = sqlite
     }
     if (hasUnsyncedSales(merged, json)) throw new Error('JSON satışları uzlaştırma sonucunda eksik kalacaktı.')
+    markMirrorDirty()
     const set = db.prepare('INSERT INTO kv (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at')
     const del = db.prepare('DELETE FROM kv WHERE key=?')
     const now = new Date().toISOString()
@@ -253,8 +278,12 @@ function initSqlite() {
 // ── Ortak yazma/silme: bellek + kalıcı depo (SQLite ya da JSON fallback) ──
 function applyStoreEntries(entries) {
   if (entries.some(([key]) => key === fallbackKey)) throw new Error('Yerel kurtarma işareti değiştirilemez.')
+  if (entries.length === 0) return
   const next = usingSqlite ? memStore : Object.assign(Object.create(null), memStore)
-  if (usingSqlite) txApply(entries)
+  if (usingSqlite) {
+    markMirrorDirty()
+    txApply(entries)
+  }
   for (const [key, val] of entries) {
     if (val === null) delete next[key]
     else next[key] = val
@@ -345,18 +374,27 @@ function runDailyBackup() {
 // koc-data.json'u SQLite içeriğiyle tazele (atomik). Yalnızca SQLite modunda
 // ve bellekte gerçek veri (koc-prods) varken — bozuk/boş veriyle asla ezme.
 function refreshLegacyMirror() {
-  if (!usingSqlite) return
-  if (!memStore['koc-prods']) return
   try {
-    const snapshot = readJsonSnapshot()
-    if (snapshot?.marker && db.prepare('SELECT value FROM meta WHERE key = ?').get(fallbackAppliedKey)?.value !== snapshot.digest) {
-      logError('Uzlaştırılmamış JSON kaydı korunuyor; ayna güncellenmedi.')
-      return
-    }
-    persistStoreToDisk()
+    synchronizeLegacyMirror()
   } catch (err) {
     logError('Acil durum aynası (koc-data.json) güncellenemedi: ' + err.message)
   }
+}
+
+function synchronizeLegacyMirror() {
+  if (!usingSqlite || Object.keys(memStore).length === 0) return
+  const snapshot = readJsonSnapshot()
+  if (snapshot?.marker && db.prepare('SELECT value FROM meta WHERE key = ?').get(fallbackAppliedKey)?.value !== snapshot.digest) {
+    throw new Error('Uzlaştırılmamış JSON kaydı korunuyor; ayna güncellenmedi.')
+  }
+  if (snapshot && !snapshot.marker && sameData(snapshot.data, memStore)
+      && readMirrorState() === 'clean:' + snapshot.digest) return
+  markMirrorDirty()
+  const text = JSON.stringify(memStore)
+  atomicWriteText(dataFilePath, text)
+  const saved = fs.readFileSync(dataFilePath, 'utf8')
+  if (saved !== text) throw new Error('Yazılan JSON aynası doğrulanamadı.')
+  atomicWriteText(mirrorStatePath(), 'clean:' + digest(saved))
 }
 
 function setupDataStore() {
@@ -377,6 +415,7 @@ function setupDataStore() {
   }
   const migrations = startupMigrations(memStore, fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8'))
   if (migrations.length) applyStoreEntries(migrations)
+  synchronizeLegacyMirror()
 
   ipcMain.on('kocstore:read', (e, key) => {
     e.returnValue = storeGet(key)

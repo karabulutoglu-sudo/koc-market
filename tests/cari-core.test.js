@@ -264,7 +264,7 @@ test('pasif caride ekstre ve mevcut borcun tahsilatı kullanılabilir, yeni bor�
 test('gerçek uygulama cari durumunu ayrı güvenli veri anahtarında tutar', () => {
   const html = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'index.html'), 'utf8');
   assert.match(html, /safeLoadJSON\(\s*'koc-cari-state'/);
-  assert.match(html, /safeSaveJSON\('koc-cari-state', nextState\)/);
+  assert.match(html, /commitRecords\(newOperationId\(\), \{'koc-cari-state':nextState\}/);
   assert.doesNotMatch(html, /safeSaveJSON\('koc-prods', nextState\)/);
 });
 

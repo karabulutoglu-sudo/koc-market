@@ -23,6 +23,10 @@ function seed() {
     'koc-sales': JSON.stringify([legacy]),
     'koc-held': '[]',
     'koc-admin-pin': '1234',
+    'koc-ulker-v6-yuklendi': '1',
+    'koc-kat-birlesim-v1': '1',
+    'koc-kdv-migrated-v1': '1',
+    'koc-kdv-sigara-fix-v10': '1',
     'koc-son-yedek': String(Date.now())
   };
   const db = new DatabaseSync(dbPath);
@@ -38,11 +42,15 @@ function seed() {
 async function findWebView() {
   assert.match(port, /^4342[89]$/);
   const until = Date.now() + 45_000;
+  let diagnostics = 'Yerel WebView2 hata ayıklama adresi yanıt vermedi.';
   do {
     let targets;
     try {
       const response = await fetch(`http://127.0.0.1:${port}/json/list`, {signal:AbortSignal.timeout(1_000)});
-      if (response.ok) targets = await response.json();
+      if (response.ok) {
+        targets = await response.json();
+        diagnostics = `Yerel hedefler: ${targets.map(({type, url}) => `${type}:${String(url).split('?')[0]}`).join(', ')}`;
+      } else diagnostics = `Yerel WebView2 adresi HTTP ${response.status} döndürdü.`;
     } catch { /* Pencere hazır olana kadar bekle. */ }
     const page = targets?.find(({type, url}) => type === 'page' && /^(?:https?:\/\/tauri\.localhost|tauri:\/\/localhost)\//.test(url));
     if (page) {
@@ -55,7 +63,7 @@ async function findWebView() {
     }
     await delay(200);
   } while (Date.now() < until);
-  throw new Error(`Kurulu ${version} WebView2 penceresi 45 saniyede hazır olmadı.`);
+  throw new Error(`Kurulu ${version} WebView2 penceresi 45 saniyede hazır olmadı. ${diagnostics}`);
 }
 
 async function evaluateInstalledApp() {

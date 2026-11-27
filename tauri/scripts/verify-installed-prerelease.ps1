@@ -84,20 +84,60 @@ function Invoke-Proof($command, $version, $port = 0) {
     if ($LASTEXITCODE -ne 0) { throw "Sentetik profil provası başarısız oldu ($command, $version)." }
 }
 
+function Write-ProfileDiagnostics {
+    $logDirectory = Join-Path $profileDir 'logs'
+    if (Test-Path -LiteralPath $logDirectory -PathType Container) {
+        Get-ChildItem -LiteralPath $logDirectory -Filter '*.log' -File | ForEach-Object {
+            Get-Content -LiteralPath $_.FullName -Tail 12 | ForEach-Object { Write-Host $_ }
+        }
+    }
+}
+
 function Run-InstalledBinary($binary, $version, $port) {
     $saved = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
-    $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$port"
-    $app = Start-Process -FilePath $binary -PassThru
+    $policyPath = 'HKLM:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+    $policyName = 'koc-market.exe'
+    $policyAdded = $false
+    $app = $null
     try {
-        Invoke-Proof 'webview' $version $port
+        if ($version -ceq '2.1.0') {
+            $debugArguments = "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$port"
+            $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+            if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+                # WebView2 150+ yükseltilmiş işlemlerde kullanıcı ortamı ayarlarını yok sayar.
+                $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $null
+                if (Get-ItemProperty -LiteralPath $policyPath -Name $policyName -ErrorAction SilentlyContinue) {
+                    throw 'Geçici VM üzerinde beklenmeyen WebView2 ilkesi var.'
+                }
+                $null = New-Item -Path $policyPath -Force
+                $null = New-ItemProperty -LiteralPath $policyPath -Name $policyName -Value $debugArguments -PropertyType String
+                $policyAdded = $true
+            } else { $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $debugArguments }
+        }
+        $app = Start-Process -FilePath $binary -WorkingDirectory (Split-Path -LiteralPath $binary) -PassThru
+        if ($version -ceq '2.0.4') {
+            $limit = [DateTime]::UtcNow.AddSeconds(30)
+            do {
+                Start-Sleep -Milliseconds 200
+                $app.Refresh()
+            } until ($app.HasExited -or $app.MainWindowHandle -ne 0 -or [DateTime]::UtcNow -ge $limit)
+            if ($app.HasExited -or $app.MainWindowHandle -eq 0) { throw 'Kurulu 2.0.4 ana penceresi açılamadı.' }
+            Write-Host "PENCERE $version $($app.MainWindowTitle)"
+        } else { Invoke-Proof 'webview' $version $port }
         $app.Refresh()
         if ($app.HasExited -or -not $app.CloseMainWindow() -or -not $app.WaitForExit(45000) -or $app.ExitCode -ne 0) {
             throw "Kurulu uygulama normal kapanmadı ($version)."
         }
+    } catch {
+        Write-ProfileDiagnostics
+        throw
     } finally {
         $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $saved
-        if (-not $app.HasExited) { $app.Kill() }
-        $app.Dispose()
+        if ($policyAdded) { Remove-ItemProperty -LiteralPath $policyPath -Name $policyName }
+        if ($null -ne $app) {
+            if (-not $app.HasExited) { $app.Kill() }
+            $app.Dispose()
+        }
     }
     Invoke-Proof 'disk' $version
 }

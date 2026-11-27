@@ -1,7 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════
 // KOÇ MARKET — Tauri köprüsü (Electron preload.js'in karşılığı)
-// index.html'in beklediği API'ler BİREBİR: window.kocStore, window.kocDB,
-// window.kocFile. index.html'de hiçbir değişiklik gerekmez.
+// index.html'in beklediği window.kocStore, window.kocDB ve window.kocFile API'leri.
 //
 // OKUMA : Senkron, bellekten (açılışta Rust tüm veriyi sayfaya gömer).
 // YAZMA : Olağan değişiklikler belleğe ve tekrar denenebilen sıraya alınır.
@@ -21,14 +20,20 @@
   var persisted = new Map(mem);
   var repairActive = false;
   var activeCommit = null;
-  var failedCommit = false;
+  var commitQueue = [];
+  var queuedCommits = new Map();
+  var failedCommit = null;
   var transition = null;
   var commitMarker = 'koc-atomic-last-operation';
+  var salesKey = 'koc-sales';
+  var completedCommits = new Set(mem.has(commitMarker) ? [mem.get(commitMarker)] : []);
 
-  function ensureWritable() {
+  function ensureWritable(ordinaryWrite) {
     if (repairActive) throw new Error('Türkçe onarım önizlemesi açık. Önce onarımı tamamlayın veya iptal edin.');
     if (transition) throw new Error('Bekleyen kayıtlar kapanış veya yenileme için diske yazılıyor.');
-    if (activeCommit) throw new Error('Toplu kayıt diske yazılıyor. Önce sonucunu bekleyin.');
+    if (ordinaryWrite && activeCommit && !activeCommit.dailyBackup) {
+      throw new Error('Toplu kayıt diske yazılıyor. Önce sonucunu bekleyin.');
+    }
   }
 
   function invoke(cmd, args) {
@@ -45,6 +50,28 @@
   function setCachedValue(cache, key, value) {
     if (value === null) cache.delete(key);
     else cache.set(key, value);
+  }
+
+  function cachedRaw(value) {
+    if (value === undefined) return null;
+    if (typeof value === 'string') return value;
+    if (value.receipts.length) {
+      var previous = value.raw.trim().slice(1, -1);
+      value.raw = '[' + value.receipts.reverse().join(',') + (previous.trim() ? ',' + previous : '') + ']';
+      value.receipts.length = 0;
+    }
+    return value.raw;
+  }
+
+  function cacheSale(receipt, raw, alreadyCommitted) {
+    var previous = persisted.get(salesKey);
+    if (alreadyCommitted && JSON.parse(cachedRaw(previous) || '[]').some(function (sale) {
+      return sale && String(sale.id) === receipt.id;
+    })) return;
+    var cached = typeof previous === 'object' ? previous : { raw: previous || '[]', receipts: [] };
+    cached.receipts.push(raw);
+    persisted.set(salesKey, cached);
+    if (!pending.has(salesKey)) mem.set(salesKey, cached);
   }
 
   function markRetryResolved() {
@@ -66,7 +93,7 @@
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
   function schedule() {
-    if (!running) pump();
+    if (pending.size && !running && !(activeCommit && activeCommit.writing)) pump();
   }
 
   async function pump() {
@@ -111,7 +138,7 @@
   }
 
   function isIdle(includeCommit) {
-    return !running && !pending.size && (!includeCommit || !activeCommit);
+    return !running && !pending.size && (!includeCommit || !queuedCommits.size);
   }
 
   function notifyIdle() {
@@ -138,11 +165,21 @@
   }
 
   function commit(operationId, entries) {
+    return enqueueCommit(operationId, entries, null);
+  }
+
+  function commitSale(operationId, sale, entries) {
+    if (sale === null) return Promise.reject(new Error('Geçerli fiş gerekli.'));
+    return enqueueCommit(operationId, entries, sale);
+  }
+
+  function enqueueCommit(operationId, entries, sale) {
     try {
       if (typeof operationId !== 'string' || !operationId.trim()) throw new Error('Geçerli işlem kimliği gerekli.');
-      if (activeCommit && activeCommit.id === operationId) return activeCommit.promise;
+      var queued = queuedCommits.get(operationId);
+      if (queued) return queued.promise;
       ensureWritable();
-      if (mem.get(commitMarker) === operationId) return Promise.resolve({ alreadyCommitted: true });
+      if (completedCommits.has(operationId)) return Promise.resolve({ alreadyCommitted: true });
       if (!entries || typeof entries !== 'object' || Array.isArray(entries)) throw new Error('Geçerli kayıt grubu gerekli.');
       var ops = Object.entries(entries).map(function (pair) {
         var key = pair[0], val = pair[1];
@@ -150,44 +187,78 @@
         return { key: key, op: val === null ? 'del' : 'set', val: val };
       });
       if (!ops.length) throw new Error('Kayıt grubu boş.');
-      var dailyBackup = ops.length === 2 && Object.hasOwn(entries, 'koc-backups') &&
+      if (sale !== null && (!sale || typeof sale !== 'object' || Array.isArray(sale) || sale.id !== operationId)) {
+        throw new Error('Fiş ve işlem kimliği eşleşmeli.');
+      }
+      var dailyBackup = sale === null && ops.length === 2 && Object.hasOwn(entries, 'koc-backups') &&
         Object.hasOwn(entries, 'koc-last-auto-backup-date');
       ops.push({ key: commitMarker, op: 'set', val: operationId });
-      var operation = { id: operationId, promise: null };
-      activeCommit = operation;
-      operation.promise = (async function () {
-        try {
-          if (!await drain(15000, false)) throw new Error('Önceki kayıtlar henüz diske yazılmadı.');
-          await invoke('kv_apply', { ops: ops });
-          ops.forEach(function (op) {
-            setCachedValue(persisted, op.key, op.val);
-            setCachedValue(mem, op.key, op.val);
-          });
-          // Günlük yedek bağımsız bir satış hatasını kapatmaz.
-          if (!dailyBackup) {
-            failedCommit = false;
-            showError(null);
-          }
-          return { alreadyCommitted: false };
-        } catch (cause) {
-          var error = writeError(cause);
-          if (error.code === 'permission_denied') {
-            showDenied(error);
-          } else if (dailyBackup) {
-            toast('⚠ Günlük yedek diske yazılamadı. Sonraki kayıtta tekrar denenecek.\n' + error.message, '#b26a00');
-          } else {
-            failedCommit = true;
-            showError('KAYIT HATASI: İşlem diske yazılamadı. Tekrar deneyin.\n' + error.message);
-          }
-          throw error;
-        } finally {
-          activeCommit = null;
-          notifyIdle();
-        }
-      })();
+      var operation = { id: operationId, ops: ops, dailyBackup: dailyBackup, writing: false, previousFailure: failedCommit };
+      if (sale !== null) {
+        operation.saleRaw = JSON.stringify(sale);
+        operation.sale = JSON.parse(operation.saleRaw);
+      }
+      operation.promise = new Promise(function (resolve, reject) {
+        operation.resolve = resolve;
+        operation.reject = reject;
+      });
+      queuedCommits.set(operationId, operation);
+      commitQueue.push(operation);
+      runNextCommit();
       return operation.promise;
     } catch (error) {
       return Promise.reject(error);
+    }
+  }
+
+  async function runNextCommit() {
+    if (activeCommit || !commitQueue.length) return;
+    var operation = commitQueue.shift();
+    activeCommit = operation;
+    try {
+      while (!isIdle(false)) {
+        if (!await drain(15000, false)) throw new Error('Önceki kayıtlar henüz diske yazılmadı.');
+      }
+      operation.writing = true;
+      var result = operation.sale
+        ? await invoke('sale_append', { sale: operation.sale, ops: operation.ops })
+        : await invoke('kv_apply', { ops: operation.ops });
+      var alreadyCommitted = operation.sale && result?.alreadyCommitted === true;
+      var acknowledged = alreadyCommitted ? Object.entries(result.values) : operation.ops.map(function (op) {
+        return [op.key, op.val];
+      });
+      acknowledged.forEach(function (record) {
+        var key = record[0], value = record[1];
+        setCachedValue(persisted, key, value);
+        // Yedek yazılırken kabul edilen olağan yazı, onaylanana dek önbellekte kalır.
+        if (!pending.has(key)) setCachedValue(mem, key, value);
+      });
+      if (operation.sale) cacheSale(operation.sale, operation.saleRaw, alreadyCommitted);
+      completedCommits.add(operation.id);
+      // Yedek veya hatadan önce kuyruğa giren başka bir kayıt bu hatayı temizlemez.
+      if (!operation.dailyBackup && (!failedCommit || failedCommit.id === operation.id ||
+        failedCommit === operation.previousFailure)) {
+        failedCommit = null;
+        showError(null);
+      }
+      operation.resolve({ alreadyCommitted: Boolean(alreadyCommitted) });
+    } catch (cause) {
+      var error = writeError(cause);
+      if (error.code === 'permission_denied') {
+        showDenied(error);
+      } else if (operation.dailyBackup) {
+        toast('⚠ Günlük yedek diske yazılamadı. Sonraki kayıtta tekrar denenecek.\n' + error.message, '#b26a00');
+      } else {
+        failedCommit = { id: operation.id };
+        showError('KAYIT HATASI: İşlem diske yazılamadı. Tekrar deneyin.\n' + error.message);
+      }
+      operation.reject(error);
+    } finally {
+      queuedCommits.delete(operation.id);
+      activeCommit = null;
+      schedule();
+      runNextCommit();
+      notifyIdle();
     }
   }
 
@@ -222,12 +293,13 @@
 
   // ── window.kocStore (index.html'in kullandığı) ───────────────────
   var kocStore = {
-    read: function (key) { key = String(key); return mem.has(key) ? mem.get(key) : null; },
-    write: function (key, val) { ensureWritable(); key = String(key); if (key === commitMarker) throw new Error('İşlem kimliği değiştirilemez.'); val = String(val); mem.set(key, val); enqueue(key, 'set', val); return true; },
-    remove: function (key) { ensureWritable(); key = String(key); if (key === commitMarker) throw new Error('İşlem kimliği değiştirilemez.'); mem.delete(key); enqueue(key, 'del', null); return true; },
+    read: function (key) { return cachedRaw(mem.get(String(key))); },
+    write: function (key, val) { ensureWritable(true); key = String(key); if (key === commitMarker) throw new Error('İşlem kimliği değiştirilemez.'); val = String(val); mem.set(key, val); enqueue(key, 'set', val); return true; },
+    remove: function (key) { ensureWritable(true); key = String(key); if (key === commitMarker) throw new Error('İşlem kimliği değiştirilemez.'); mem.delete(key); enqueue(key, 'del', null); return true; },
     keys: function () { return Array.from(mem.keys()); },
     commit: commit
   };
+  if (boot.engine === 'sqlite' && boot.saleAppend === true) kocStore.commitSale = commitSale;
   Object.defineProperty(kocStore, '__tauri', { value: true });
 
   // ── window.kocDB (aynı depo, yeni API) ───────────────────────────
@@ -235,7 +307,7 @@
     get: function (key) { return kocStore.read(key); },
     set: function (key, val) { return kocStore.write(key, val); },
     delete: function (key) { return kocStore.remove(key); },
-    getAll: function () { var o = {}; mem.forEach(function (v, k) { o[k] = v; }); return o; }
+    getAll: function () { var o = {}; mem.forEach(function (v, k) { o[k] = cachedRaw(v); }); return o; }
   };
 
   // ── window.kocFile (gerçek Kaydet / Aç pencereleri) ──────────────
@@ -263,16 +335,16 @@
     platform: 'tauri',
     engine: boot.engine,
     info: function () { return invoke('kv_info'); },
-    pendingWrites: function () { return pending.size + (running ? 1 : 0) + (activeCommit ? 1 : 0); },
+    pendingWrites: function () { return pending.size + (running ? 1 : 0) + queuedCommits.size; },
     flush: function () { return drain(15000); },
     hasEncodingDamage: function () {
       return ['koc-prods', 'koc-sales', 'koc-held', 'koc-cari-state'].some(function (key) {
-        return /[\u00c2\u00c3\u00c4\u00c5\u00e2\ufffd]/.test(mem.get(key) || '');
+        return /[\u00c2\u00c3\u00c4\u00c5\u00e2\ufffd]/.test(kocStore.read(key) || '');
       });
     },
     previewEncodingRepair: async function () {
       if (repairActive) throw new Error('Onarım önizlemesi zaten açık. Önce kapatın.');
-      if (transition || activeCommit || failedCommit) throw new Error('Önce bekleyen kayıt işlemini tamamlayın.');
+      if (transition || queuedCommits.size || failedCommit) throw new Error('Önce bekleyen kayıt işlemini tamamlayın.');
       if ((typeof cart !== 'undefined' && cart && cart.length) || (typeof paying !== 'undefined' && paying)) {
         throw new Error('Önce açık satışı tamamlayın veya sepeti beklemeye alın.');
       }
@@ -336,6 +408,9 @@
           showError('KAYIT HATASI: Kapanış engellendi.\n' + error);
         });
       });
+  };
+  window.__kocCloseFailed = function () {
+    if (transition === 'close') transition = null;
   };
   window.__kocReload = function () {
     return finishTransition('reload', function () { location.reload(); });

@@ -1073,7 +1073,7 @@ function newOperationId() {
   return Date.now().toString(36) + '-' + Array.from(random, n => n.toString(36)).join('-');
 }
 
-async function commitRecords(id, records, publish) {
+async function commitRecords(id, records, publish, sale) {
   if (dataCommitBusy) throw new Error('Önceki kayıt işlemi tamamlanıyor.');
   const store = window.kocStore || LS;
   if (typeof store.commit !== 'function') throw new Error('Bu uygulama paketi güvenli toplu kayıt için güncellenmeli.');
@@ -1096,8 +1096,8 @@ async function commitRecords(id, records, publish) {
   dataCommitBusy = true;
   document.body.inert = true;
   try {
-    await store.commit(id, entries);
-    publish();
+    const result = sale ? await store.commitSale(id, sale, entries) : await store.commit(id, entries);
+    publish(result);
   } finally {
     dataCommitBusy = false;
     document.body.inert = false;
@@ -3269,24 +3269,32 @@ async function completeSale(options) {
     const nextCari = customer
       ? window.KocCari.addCreditSale(cariState, {customerId, saleId:id, at, items, description:'Veresiye satış #' + id})
       : cariState;
-    const nextSales = [sale, ...sales];
-    const records = {'koc-prods':nextProducts, 'koc-sales':nextSales};
+    const appendSale = typeof window.kocStore?.commitSale === 'function';
+    const records = {'koc-prods':nextProducts};
+    if (!appendSale) records['koc-sales'] = [sale, ...sales];
     if (customer) records['koc-cari-state'] = nextCari;
-    await commitRecords(id, records, () => {
-      products = nextProducts;
-      sales = nextSales;
-      cariState = nextCari;
+    await commitRecords(id, records, result => {
+      if (appendSale && result?.alreadyCommitted) {
+        products = JSON.parse(LS.getItem('koc-prods'));
+        sales = JSON.parse(LS.getItem('koc-sales'));
+        if (customer) cariState = JSON.parse(LS.getItem('koc-cari-state'));
+      } else {
+        products = nextProducts;
+        if (appendSale) sales.unshift(sale);
+        else sales = records['koc-sales'];
+        cariState = nextCari;
+      }
       pendingSale = null;
       cart = [];
       paying = false;
       paymentMethod = '';
-    });
+    }, appendSale ? sale : undefined);
   } catch (err) {
     flash('Satış kaydedilemedi. Sepet korunuyor. ' + err.message, false);
     renderCart();
     return false;
   }
-  maybeDailyBackup();
+  scheduleDailyBackup();
   renderQuick();
   renderCart();
   updateStats();
@@ -5340,8 +5348,22 @@ function _todayKey(d = new Date()) {
 // Gün işareti ancak aynı işlemdeki yedek diske yazılırsa ilerler.
 let dailyBackupInProgress = false;
 let confirmedDailyBackupDate;
+let dailyBackupScheduled = false;
+function scheduleDailyBackup() {
+  if (dailyBackupScheduled) return;
+  dailyBackupScheduled = true;
+  setTimeout(() => {
+    dailyBackupScheduled = false;
+    void maybeDailyBackup();
+  }, 1500);
+}
+
 async function maybeDailyBackup() {
-  if (dailyBackupInProgress || dataCommitBusy) return false;
+  if (dailyBackupInProgress) return false;
+  if (cart.length || paying || dataCommitBusy) {
+    scheduleDailyBackup();
+    return false;
+  }
   dailyBackupInProgress = true;
   try {
     const now = new Date();
@@ -5382,11 +5404,11 @@ async function maybeDailyBackup() {
 
 save = function() {
   _originalSave.apply(this, arguments);
-  maybeDailyBackup();   // günde yalnızca ilk kayıtta yedek alınır, sonrakiler atlanır
+  scheduleDailyBackup();
 };
 
 // İlk açılışta günlük yedeği garanti et (o gün hiç değişiklik olmasa bile).
-setTimeout(maybeDailyBackup, 1500);
+scheduleDailyBackup();
 
 
 // ── YEDEK YÖNETİCİSİ ──

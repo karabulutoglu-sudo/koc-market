@@ -323,10 +323,33 @@ fn cashier_trace(key: &str, raw: &str) -> bool {
 }
 
 pub fn authorize(mem: &Kv, ops: &[Op], is_admin: bool) -> Result<(), String> {
-    authorize_inner(mem, ops, is_admin).ok_or_else(|| ADMIN_REQUIRED.to_string())
+    authorize_inner(mem, ops, is_admin, None).ok_or_else(|| ADMIN_REQUIRED.to_string())
 }
 
-fn authorize_inner(mem: &Kv, ops: &[Op], is_admin: bool) -> Option<()> {
+pub(crate) fn receipt_id(sale: &Value) -> Option<String> {
+    id(sale.get("id")?)
+}
+
+/// Authorize one newly issued receipt without reading the historical sales array.
+/// Receipt uniqueness is enforced by the storage transaction.
+pub fn authorize_append_sale(mem: &Kv, sale: &Value, ops: &[Op], _is_admin: bool) -> Result<String, String> {
+    fn validate(mem: &Kv, sale: &Value, ops: &[Op]) -> Option<String> {
+        let id = receipt_id(sale)?;
+        let marker = ops.iter().find(|op| op.key == MARKER)?;
+        if marker.val.as_deref() != Some(id.as_str()) { return None; }
+        if ops.iter().any(|op| {
+            let key = op.key.as_str();
+            !matches!(key, PRODUCT | CARI | MARKER) && !RECOVERY.iter().any(|suffix|
+                matches!(key.strip_suffix(*suffix), Some(PRODUCT | CARI)))
+        }) { return None; }
+        // A sale uses the same receipt, stock and cari rules in both roles.
+        authorize_inner(mem, ops, false, Some(sale))?;
+        Some(id)
+    }
+    validate(mem, sale, ops).ok_or_else(|| ADMIN_REQUIRED.to_string())
+}
+
+fn authorize_inner(mem: &Kv, ops: &[Op], is_admin: bool, append: Option<&Value>) -> Option<()> {
     let mut writes = HashMap::new();
     for op in ops {
         if op.op == "del" && op.val.is_none() && is_admin && core_key(&op.key) {
@@ -355,7 +378,7 @@ fn authorize_inner(mem: &Kv, ops: &[Op], is_admin: bool) -> Option<()> {
             if raw.is_empty() || raw.len() > 160 || !raw.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
                 return None;
             }
-            if !writes.keys().any(|candidate| core_key(candidate)) { return None; }
+            if append.is_none() && !writes.keys().any(|candidate| core_key(candidate)) { return None; }
         } else if !cashier_trace(key, raw) {
             let (base, suffix) = RECOVERY.into_iter().find_map(|suffix| key.strip_suffix(suffix).map(|base| (base,suffix)))?;
             if !core_key(base) || base == BACKUPS { return None; }
@@ -369,18 +392,22 @@ fn authorize_inner(mem: &Kv, ops: &[Op], is_admin: bool) -> Option<()> {
     }
     if is_admin { return Some(()); }
     if records.keys().any(|key| !matches!(*key, PRODUCT | SALE | CARI | HELD | BACKUPS)) { return None; }
-    let mut receipt = None;
+    let mut receipt = append;
     if let Some(next) = records.get(SALE) {
         let old = stored_array(mem, SALE)?;
         let next = next.as_array()?;
         let (sale, rest) = next.split_first()?;
-        if !same_values(rest, &old) || !valid_receipt(sale) || old.iter().any(|entry| id(&entry["id"]) == id(&sale["id"])) {
+        let sale_id = receipt_id(sale)?;
+        if !same_values(rest, &old) || old.iter().any(|entry| receipt_id(entry).as_ref() == Some(&sale_id)) {
             return None;
         }
+        receipt = Some(sale);
+    }
+    if let Some(sale) = receipt {
+        if !valid_receipt(sale) { return None; }
         let old_catalog = stored_array(mem, PRODUCT)?;
         let next_catalog = records.get(PRODUCT).and_then(Value::as_array).unwrap_or(&old_catalog);
         if !valid_stock_delta(mem, &old_catalog, next_catalog, sale) { return None; }
-        receipt = Some(sale);
     } else if records.contains_key(PRODUCT) {
         return None;
     }
@@ -461,7 +488,7 @@ fn nonneg(value: &Value) -> Option<i64> {
 
 fn valid_receipt(sale: &Value) -> bool {
     fn validate(sale: &Value) -> Option<()> {
-        id(&sale["id"])?;
+        receipt_id(sale)?;
         exact_i64(&sale["at"])?;
         sale["d"].as_str()?;
         let items = sale["items"].as_array()?.iter();
@@ -762,6 +789,44 @@ mod tests {
     }
 
     #[test]
+    fn append_checks_stock_without_reading_history() {
+        let original = json!({"b":"830001","n":"Örnek ürün","p":60.0,"s":10,"stockTracked":true});
+        let mut mem = Kv::new();
+        apply(&mut mem, vec![value_op(PRODUCT, json!([original])), set(SALE,"unused historical projection")]);
+        let receipt = cash_receipt(60);
+        let remaining = json!([{"b":"830001","n":"Örnek ürün","p":60,"s":9,"stockTracked":true}]);
+        let changes = [value_op(PRODUCT, remaining.clone()), value_op("koc-prods-shadow", remaining.clone()),
+            value_op("koc-prods-emergency", remaining.clone()), set("koc-prods-emergency-ts","1"), set(MARKER,"sentetik-1")];
+        assert_eq!(authorize_append_sale(&mem, &receipt, &changes, false).unwrap(), "sentetik-1");
+        let wrong_stock = [set(MARKER,"sentetik-1")];
+        assert!(authorize_append_sale(&mem, &receipt, &wrong_stock, true).is_err());
+        let stale_recovery = [value_op(PRODUCT, remaining), value_op("koc-prods-shadow", json!([])),
+            set(MARKER,"sentetik-1")];
+        assert!(authorize_append_sale(&mem, &receipt, &stale_recovery, false).is_err());
+        let mut wrong_total = receipt;
+        wrong_total["total"] = json!(59);
+        assert!(authorize_append_sale(&mem, &wrong_total, &changes, true).is_err());
+    }
+
+    #[test]
+    fn append_marker_is_tied_to_receipt_and_other_roots_are_rejected() {
+        let mem = Kv::new();
+        let receipt = cash_receipt(60);
+        let marker = || set(MARKER,"sentetik-1");
+        assert!(authorize_append_sale(&mem, &receipt, &[marker()], false).is_ok());
+        assert!(authorize_append_sale(&mem, &receipt, &[], false).is_err());
+        assert!(authorize_append_sale(&mem, &receipt, &[set(MARKER,"other-id")], false).is_err());
+        assert!(authorize_append_sale(&mem, &receipt, &[marker(),marker()], false).is_err());
+        assert!(authorize_append_sale(&mem, &receipt, &[remove(MARKER.into())], false).is_err());
+        for key in [SALE, "koc-sales-shadow", "koc-sales-emergency", "koc-sales-emergency-ts", HELD, BACKUPS, STOCK] {
+            let ops = [marker(), set(key,"[]")];
+            assert!(authorize_append_sale(&mem, &receipt, &ops, true).is_err(), "{key}");
+        }
+        assert_eq!(receipt_id(&json!({"id":60.0})), receipt_id(&json!({"id":"60"})));
+        assert_ne!(receipt_id(&json!({"id":9_007_199_254_740_992.0})), receipt_id(&json!({"id":"9007199254740992"})));
+    }
+
+    #[test]
     fn cashier_can_post_veresiye_with_exactly_one_matching_cari_entry() {
         let customer = json!({"id":"customer-1","name":"Örnek cari","active":true,"riskLimit":0});
         let old_state = json!({"schemaVersion":1,"lastId":1,"customers":[customer],"entries":[],"lots":[]});
@@ -776,6 +841,13 @@ mod tests {
             "originalUnitPriceCents":1000,"highestAppliedUnitPriceCents":1000,"outstandingCents":1000,"closedAt":null});
         let post = json!({"schemaVersion":1,"lastId":3,"customers":[customer],"entries":[entry],"lots":[lot]});
         assert!(authorize(&mem,&[value_op(SALE,json!([sale])),value_op(CARI,post.clone())],false).is_ok());
+        let append = [set(MARKER,"sentetik-2"), value_op(CARI,post.clone())];
+        assert_eq!(authorize_append_sale(&mem, &sale, &append, false).unwrap(), "sentetik-2");
+        assert!(authorize_append_sale(&mem, &sale, &[set(MARKER,"sentetik-2")], true).is_err());
+        let mut unrelated_cari = post.clone();
+        unrelated_cari["entries"][0]["referenceId"] = json!("other-id");
+        let unrelated = [set(MARKER,"sentetik-2"), value_op(CARI,unrelated_cari)];
+        assert!(authorize_append_sale(&mem, &sale, &unrelated, true).is_err());
         let payment = json!({"id":"entry-5","referenceId":"payment-4","type":"payment","at":1100,"customerId":"customer-1",
             "debitCents":0,"creditCents":200,"balanceCents":800,"details":{"unallocatedCreditCents":0,
                 "allocations":[{"lotId":"lot-2","appliedCents":200}]}});

@@ -70,6 +70,14 @@ impl Shutdown {
         Flush::Ready(intent)
     }
 
+    pub fn reopen_after_failure(&self) {
+        if let Ok(mut state) = self.0.lock() {
+            if state.phase == Phase::Finishing {
+                state.phase = Phase::Idle;
+            }
+        }
+    }
+
     pub fn begin_prompt(&self, generation: u32) -> Option<Intent> {
         let mut state = self.0.lock().ok()?;
         let Phase::Waiting(current, intent) = state.phase else { return None; };
@@ -147,5 +155,18 @@ mod tests {
         assert_eq!(close.begin_prompt(retry), Some(Intent::Close));
         assert_eq!(close.end_prompt(retry, true), Some(Intent::Close));
         assert!(close.begin_write().is_err());
+    }
+
+    #[test]
+    fn failed_finalization_allows_writes_and_a_new_close_generation() {
+        let close = Shutdown::new();
+        let generation = close.start(Intent::Update).unwrap();
+        assert_eq!(close.acknowledge(generation), Flush::Ready(Intent::Update));
+        close.reopen_after_failure();
+        assert!(close.begin_write().is_ok());
+        let retry = close.start(Intent::Close).unwrap();
+        assert_ne!(retry, generation);
+        assert_eq!(close.acknowledge(generation), Flush::Stale);
+        assert_eq!(close.acknowledge(retry), Flush::Ready(Intent::Close));
     }
 }

@@ -54,7 +54,7 @@ function dailyBackupApp({ native = true } = {}) {
     };
   }
   const context = vm.createContext({
-    ...baseline, window, dataCommitBusy:false, newOperationId:() => 'backup-1',
+    ...baseline, window, cart:[], paying:false, dataCommitBusy:false, newOperationId:() => 'backup-1',
     save() {}, setTimeout() {}, console:{warn() {}}
   });
   const browserStart = html.indexOf('function browserStore()');
@@ -68,6 +68,23 @@ function dailyBackupApp({ native = true } = {}) {
   vm.runInContext(html.slice(dailyStart, dailyEnd) + html.slice(readStart, readEnd), context);
   return { baseline, context, stored, window, writes };
 }
+
+test('günlük yedek açık sepet, ödeme veya toplu kayıt bitene kadar başlamaz', async () => {
+  const { context, stored, writes } = dailyBackupApp();
+  context.cart = [{b:'A'}];
+  assert.equal(await context.maybeDailyBackup(), false);
+  context.cart = [];
+  context.paying = true;
+  assert.equal(await context.maybeDailyBackup(), false);
+  context.paying = false;
+  context.dataCommitBusy = true;
+  assert.equal(await context.maybeDailyBackup(), false);
+  assert.equal(writes.length, 0);
+  assert.equal(stored.has('koc-last-auto-backup-date'), false);
+  context.dataCommitBusy = false;
+  assert.equal(await context.maybeDailyBackup(), true);
+  assert.equal(writes.length, 1);
+});
 
 test('günlük yedek ve tarihi tek disk onayında yazılır, eşzamanlı istek yedek çoğaltmaz', async () => {
   const { baseline, context, stored, window, writes } = dailyBackupApp();

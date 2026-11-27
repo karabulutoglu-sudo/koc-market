@@ -55,6 +55,7 @@ struct PendingEncodingRepair {
 }
 
 static REPAIR_NONCE: AtomicU64 = AtomicU64::new(0);
+const COMMIT_MARKER: &str = "koc-atomic-last-operation";
 
 // ── Komutlar (JS köprüsünün çağırdığı) ─────────────────────────────
 
@@ -77,9 +78,7 @@ impl From<&str> for KvApplyError {
     }
 }
 
-/// Sıralı yazma kuyruğundan gelen grup işlemi tek transaction'da uygula.
-#[tauri::command(async)]
-fn kv_apply(state: tauri::State<'_, AppState>, ops: Vec<Op>) -> Result<(), KvApplyError> {
+fn with_write_store<T>(state: &AppState, write: impl FnOnce(&mut Store, bool) -> Result<T, KvApplyError>) -> Result<T, KvApplyError> {
     let _write = state.begin_write()?;
     let repair = state.encoding_repair.lock().map_err(|_| "Onarım kilidi bozuk".to_string())?;
     if repair.is_some() {
@@ -94,27 +93,83 @@ fn kv_apply(state: tauri::State<'_, AppState>, ops: Vec<Op>) -> Result<(), KvApp
         }
     }
     let admin = state.admin.lock().map_err(|_| "Yetki kilidi bozuk".to_string())?;
-    authorization::authorize(&st.mem, &ops, admin.authenticated()).map_err(|message| {
-        KvApplyError::PermissionDenied { code: "permission_denied", message }
-    })?;
-    let measure = state.verify_profile().is_some() &&
-        ops.iter().any(|op| op.key == "koc-sales") &&
-        ops.iter().any(|op| op.key == "koc-atomic-last-operation");
-    let wal_len = || std::fs::metadata(st.dir.join("kocmarket.db-wal")).map_or(0, |meta| meta.len());
-    let wal_before = if measure { wal_len() } else { 0 };
-    let start = std::time::Instant::now();
-    st.apply(&ops).map_err(|e| {
-        log_line(&st.dir, &format!("Yazma hatası ({} işlem): {e}", ops.len()));
-        e
-    })?;
-    if measure {
-        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-        let logical_bytes: usize = ops.iter().filter_map(|op| op.val.as_ref()).map(String::len).sum();
-        let wal_after = std::fs::metadata(st.dir.join("kocmarket.db-wal")).map_or(0, |meta| meta.len());
-        let delta = i128::from(wal_after) - i128::from(wal_before);
-        log_line(&st.dir, &format!("PROOF_SALE_WRITE elapsed_ms={elapsed:.3} logical_bytes={logical_bytes} wal_delta_bytes={delta}"));
-    }
-    Ok(())
+    write(st, admin.authenticated())
+}
+
+fn denied(message: String) -> KvApplyError {
+    KvApplyError::PermissionDenied { code: "permission_denied", message }
+}
+
+fn wal_bytes(dir: &std::path::Path) -> u64 {
+    std::fs::metadata(dir.join("kocmarket.db-wal")).map_or(0, |meta| meta.len())
+}
+
+fn write_sale_metrics(st: &Store, started: std::time::Instant, wal_before: u64, ops: &[Op], receipt_bytes: usize) {
+    let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+    let logical_bytes = receipt_bytes + ops.iter().filter_map(|op| op.val.as_ref()).map(String::len).sum::<usize>();
+    let delta = i128::from(wal_bytes(&st.dir)) - i128::from(wal_before);
+    log_line(&st.dir, &format!("PROOF_SALE_WRITE elapsed_ms={elapsed:.3} logical_bytes={logical_bytes} wal_before_bytes={wal_before} wal_delta_bytes={delta}"));
+}
+
+/// Sıralı yazma kuyruğundan gelen grup işlemi tek transaction'da uygula.
+#[tauri::command(async)]
+fn kv_apply(state: tauri::State<'_, AppState>, ops: Vec<Op>) -> Result<(), KvApplyError> {
+    with_write_store(&state, |st, is_admin| {
+        let changes_sales = ops.iter().any(|op| op.key == "koc-sales");
+        let snapshot;
+        let mem = if changes_sales || ops.iter().any(|op| op.key == "koc-backups") {
+            snapshot = st.snapshot()?;
+            &snapshot
+        } else { &st.mem };
+        authorization::authorize(mem, &ops, is_admin).map_err(denied)?;
+        let measure = state.verify_profile().is_some() && changes_sales && ops.iter().any(|op| op.key == COMMIT_MARKER);
+        let wal_before = if measure { wal_bytes(&st.dir) } else { 0 };
+        let started = std::time::Instant::now();
+        st.apply(&ops).map_err(|error| {
+            log_line(&st.dir, &format!("Yazma hatası ({} işlem): {error}", ops.len()));
+            error
+        })?;
+        if measure { write_sale_metrics(st, started, wal_before, &ops, 0); }
+        Ok(())
+    })
+}
+
+#[tauri::command(async)]
+fn sale_append(state: tauri::State<'_, AppState>, sale: Value, ops: Vec<Op>) -> Result<Value, KvApplyError> {
+    with_write_store(&state, |st, is_admin| {
+        if !st.sales_append_enabled() { return Err(denied("Satır bazlı satış deposu hazır değil.".into())); }
+        let id = authorization::receipt_id(&sale).ok_or_else(|| denied("Satış kimliği geçersiz.".into()))?;
+        if !ops.iter().any(|op| op.key == COMMIT_MARKER && op.op == "set" && op.val.as_deref() == Some(id.as_str())) {
+            return Err(denied("Satış ve işlem kimliği uyuşmuyor.".into()));
+        }
+        if let Some(stored) = st.stored_sale(&id)? {
+            let receipt: Value = serde_json::from_str(&stored).map_err(|error| error.to_string())?;
+            if receipt != sale {
+                return Err(denied("Bu satış kimliği farklı bir fişe ait.".into()));
+            }
+            // Yanıtı kaybolmuş işlemde diskteki son stok ve cari değerlerini döndür.
+            let mut values = serde_json::Map::new();
+            for key in ["koc-prods", "koc-cari-state"] {
+                for suffix in ["", "-shadow", "-emergency", "-emergency-ts"] {
+                    let entry = format!("{key}{suffix}");
+                    values.insert(entry.clone(), json!(st.mem.get(&entry)));
+                }
+            }
+            values.insert(COMMIT_MARKER.into(), json!(st.mem.get(COMMIT_MARKER)));
+            return Ok(json!({ "alreadyCommitted": true, "values": values }));
+        }
+        authorization::authorize_append_sale(&st.mem, &sale, &ops, is_admin).map_err(denied)?;
+        let serialized = serde_json::to_string(&sale).map_err(|error| error.to_string())?;
+        let measure = state.verify_profile().is_some();
+        let wal_before = if measure { wal_bytes(&st.dir) } else { 0 };
+        let started = std::time::Instant::now();
+        st.append_sale(&id, &serialized, &ops).map_err(|error| {
+            log_line(&st.dir, &format!("Satış yazma hatası: {error}"));
+            error
+        })?;
+        if measure { write_sale_metrics(st, started, wal_before, &ops, serialized.len()); }
+        Ok(json!({ "alreadyCommitted": false }))
+    })
 }
 
 #[tauri::command]
@@ -169,9 +224,9 @@ fn encoding_repair_preview(state: tauri::State<'_, AppState>) -> Result<Value, S
     }
     let guard = state.store.lock().map_err(|_| "Depo kilidi bozuk".to_string())?;
     let st = guard.as_ref().ok_or("Depo hazır değil")?;
-    let plan = encoding_repair::plan(&st.mem)?;
+    let snapshot = st.snapshot()?;
+    let plan = encoding_repair::plan(&snapshot)?;
     let backup = st.repair_backup()?;
-    let snapshot = st.mem.clone();
     let token = format!("{}-{}", chrono::Utc::now().timestamp_micros(), REPAIR_NONCE.fetch_add(1, Ordering::SeqCst));
     let mut preview = serde_json::to_value(&plan.preview).map_err(|e| e.to_string())?;
     preview["token"] = json!(token);
@@ -347,18 +402,44 @@ fn test_delay_next_write(state: tauri::State<'_, AppState>, ms: u64) {
     }
 }
 
-fn shutdown_store(app: &AppHandle) {
+#[tauri::command(async)]
+fn test_sales_checkpoint(state: tauri::State<'_, AppState>) -> Result<u64, String> {
+    if state.verify_profile().is_none() { return Err("Bu komut yalnız doğrulama profilinde çalışır.".into()); }
+    let guard = state.store.lock().map_err(|_| "Depo kilidi bozuk")?;
+    let st = guard.as_ref().ok_or("Depo hazır değil")?;
+    st.checkpoint()?;
+    Ok(wal_bytes(&st.dir))
+}
+
+fn shutdown_store(app: &AppHandle) -> Result<(), String> {
     if let Some(state) = app.try_state::<AppState>() {
-        if let Ok(mut g) = state.store.lock() {
-            if let Some(st) = g.as_mut() {
-                st.shutdown();
+        let mut guard = state.store.lock().map_err(|_| "Depo kilidi bozuk")?;
+        if let Some(st) = guard.as_mut() {
+            let started = std::time::Instant::now();
+            st.shutdown().map_err(|error| {
+                log_line(&st.dir, &format!("Depo kapanışı tamamlanamadı: {error}"));
+                error
+            })?;
+            if state.verify_profile().is_some() {
+                let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+                log_line(&st.dir, &format!("PROOF_STORE_CLOSE elapsed_ms={elapsed:.3}"));
             }
+            *guard = None;
         }
     }
+    Ok(())
 }
 
 fn finish_and_exit(app: &AppHandle, intent: Intent) {
-    shutdown_store(app);
+    if let Err(error) = shutdown_store(app) {
+        app.state::<AppState>().closing.reopen_after_failure();
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.eval("window.__kocCloseFailed && window.__kocCloseFailed()");
+        }
+        app.dialog().message(format!("Kayıtlar kapanış için doğrulanamadı. Tekrar deneyin.\n\n{error}"))
+            .title("Koç Market — Kapanış Tamamlanamadı").kind(MessageDialogKind::Warning).show(|_| {});
+        return;
+    }
     #[cfg(not(debug_assertions))]
     if intent == Intent::Update {
         let state = app.state::<AppState>();
@@ -449,19 +530,19 @@ fn show_close_blocked(app: &AppHandle, generation: u32, reason: &str) {
 
 // ── index.html'e açılış verisi + köprü enjeksiyonu ─────────────────
 
-fn build_boot_script(app: &AppHandle, nonce: &str) -> String {
+fn build_boot_script(app: &AppHandle, nonce: &str) -> Result<String, String> {
     let state = app.state::<AppState>();
     let guard = state.store.lock().unwrap();
     let report = state.report.lock().unwrap().clone();
     let boot = match guard.as_ref() {
         Some(st) => {
-            let data: store::Kv = st.mem.iter().filter(|(key,_)| !authorization::pin_key(key))
-                .map(|(key,value)| (key.clone(),value.clone())).collect();
-            json!({ "engine": st.engine(), "report": report, "data": data })
+            let mut data = st.snapshot()?;
+            data.retain(|key, _| !authorization::pin_key(key));
+            json!({ "engine": st.engine(), "saleAppend": st.sales_append_enabled(), "report": report, "data": data })
         }
         None => json!({ "engine": "kapalı", "report": report, "data": {} }),
     };
-    bootstrap::build_boot_script_with_nonce(&boot.to_string(), nonce)
+    Ok(bootstrap::build_boot_script_with_nonce(&boot.to_string(), nonce))
 }
 
 // ── Electron veri klasörü adayları ─────────────────────────────────
@@ -567,7 +648,7 @@ pub fn run() {
             #[cfg(not(debug_assertions))]
             pending_update: Mutex::new(None),
         })
-        .invoke_handler(tauri::generate_handler![kv_apply, kv_info, admin_unlock, admin_lock, admin_status, admin_change_pin, file_save, file_open, flush_done, flush_blocked, electron_ack, encoding_repair_preview, encoding_repair_apply, encoding_repair_cancel, test_log, test_close, test_delay_next_write])
+        .invoke_handler(tauri::generate_handler![kv_apply, sale_append, kv_info, admin_unlock, admin_lock, admin_status, admin_change_pin, file_save, file_open, flush_done, flush_blocked, electron_ack, encoding_repair_preview, encoding_repair_apply, encoding_repair_cancel, test_log, test_close, test_delay_next_write, test_sales_checkpoint])
         .setup(|app| {
             let handle = app.handle().clone();
             let profile = app.state::<AppState>().isolated_profile.clone();
@@ -578,9 +659,10 @@ pub fn run() {
 
             match Store::init(dir.clone(), &cands).and_then(|(mut store, report)| {
                 let migrations = authorization::startup_migrations(
-                    &store.mem, include_str!("../../../index.html"), chrono::Utc::now().timestamp_millis()
+                    &store.snapshot()?, include_str!("../../../index.html"), chrono::Utc::now().timestamp_millis()
                 )?;
                 if !migrations.is_empty() { store.apply(&migrations)?; }
+                store.prepare_sale_rows()?;
                 store.synchronize_mirror()?;
                 Ok((store, report))
             }) {
@@ -631,7 +713,18 @@ pub fn run() {
                         } else {
                             String::new()
                         };
-                        let boot = build_boot_script(&h2, &nonce);
+                        let boot = match build_boot_script(&h2, &nonce) {
+                            Ok(boot) => boot,
+                            Err(error) => {
+                                let state = h2.state::<AppState>();
+                                if let Some(st) = state.store.lock().unwrap().as_ref() {
+                                    log_line(&st.dir, &format!("Açılış kaydı hazırlanamadı: {error}"));
+                                }
+                                *resp.status_mut() = tauri::http::StatusCode::INTERNAL_SERVER_ERROR;
+                                *resp.body_mut() = Cow::Owned("Güncel kayıtlar yüklenemedi. Koç Market'i kapatıp yeniden deneyin.".as_bytes().to_vec());
+                                return;
+                            }
+                        };
                         let body = bootstrap::inject_into_html(resp.body(), &boot);
                         *resp.body_mut() = Cow::Owned(body);
                         resp.headers_mut().insert("Content-Type", tauri::http::HeaderValue::from_static(bootstrap::HTML_CONTENT_TYPE));
@@ -686,9 +779,9 @@ pub fn run() {
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 let state = h4.state::<AppState>();
-                let snap = { state.store.lock().unwrap().as_ref().map(|s| (s.dir.clone(), s.mem.clone())) };
-                if let Some((dir, mem)) = snap {
-                    match store::daily_backup(&dir, &mem) {
+                let snap = { state.store.lock().unwrap().as_ref().map(|s| (s.dir.clone(), s.snapshot())) };
+                if let Some((dir, snapshot)) = snap {
+                    match snapshot.and_then(|data| store::daily_backup(&dir, &data)) {
                         Ok(Some(p)) => log_line(&dir, &format!("Günlük yedek alındı: {}", p.display())),
                         Ok(None) => {}
                         Err(e) => log_line(&dir, &format!("Günlük yedek hatası: {e}")),
@@ -712,7 +805,7 @@ pub fn run() {
             api.prevent_exit();
             request_flush_and_exit(app, Intent::Close);
         }
-        RunEvent::Exit => shutdown_store(app),
+        RunEvent::Exit => { let _ = shutdown_store(app); }
         _ => {}
     });
 }

@@ -3,7 +3,7 @@
   'use strict';
 
   const stage = window.__KOC_VERIFY_STAGE;
-  if (!['clean', 'old-decimal', 'sqlite', 'json', 'reopen', 'realistic'].includes(stage)) return;
+  if (!['clean', 'old-decimal', 'queue', 'sqlite', 'json', 'reopen', 'realistic', 'scale-cash', 'scale-credit'].includes(stage)) return;
   const invoke = (name, args) => window.__TAURI_INTERNALS__.invoke(name, args || {});
   let barcode = '8699991234567';
   const customerId = 'proof-customer';
@@ -17,11 +17,11 @@
     if (!condition) throw new Error(message);
   }
 
-  async function until(predicate, message) {
+  async function until(predicate, message, interval = 30) {
     const limit = performance.now() + 10_000;
     while (!await predicate()) {
       check(performance.now() < limit, message);
-      await pause(30);
+      await pause(interval);
     }
   }
 
@@ -164,8 +164,7 @@
     check(cart.length === 1 && cart[0].q === quantity, 'Okutulan miktar sepette doğrulanamadı.');
   }
 
-  async function cashSale(quantity, amount) {
-    const count = sales.length;
+  function prepareCashSale(quantity, amount) {
     scan(quantity);
     click('.btn-pay');
     click('.pay-method.cash');
@@ -174,14 +173,42 @@
     input.value = amount;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     check(document.querySelector('#changeBox .change-val')?.textContent === '0,00 ₺', 'Para üstü 0,00 TL olmalı.');
+  }
+
+  async function prepareSaleMeasurement() {
+    check(await window.kocApp.flush(), 'Ölçüm öncesi yazma kuyruğu boşalmadı.');
+    check(await invoke('test_sales_checkpoint') === 0, 'Ölçüm WAL dosyası sıfır bayt olmalı.');
+  }
+
+  async function cashSale(quantity, amount, checkpoint = false) {
+    const count = sales.length;
+    prepareCashSale(quantity, amount);
+    if (checkpoint) await prepareSaleMeasurement();
     const start = performance.now();
     click('.btn-finish');
-    await until(() => sales.length === count + 1 && cart.length === 0, 'Nakit satış kalıcılaşmadı.');
+    await until(() => sales.length === count + 1 && cart.length === 0, 'Nakit satış kalıcılaşmadı.', 8);
     const elapsedMs = Math.round((performance.now() - start) * 10) / 10;
     const receipt = sales[0];
     check(receipt.total === Number(amount.replace(',', '.')) && receipt.paid === receipt.total &&
       receipt.change === 0 && receipt.paymentMethod === 'cash', 'Nakit fiş özeti beklentiden farklı.');
     return { saleId: receipt.id, cashTotal: receipt.total, saleAcknowledgementMs: elapsedMs };
+  }
+
+  async function scaleCreditSale() {
+    const count = sales.length;
+    scan(1);
+    click('.btn-pay');
+    click('.pay-method.account');
+    await prepareSaleMeasurement();
+    const start = performance.now();
+    click('.cari-pay-row[data-customer-id="' + customerId + '"]');
+    await until(() => sales.length === count + 1 && cart.length === 0, 'Veresiye satış kalıcılaşmadı.', 8);
+    const elapsedMs = Math.round((performance.now() - start) * 10) / 10;
+    const sale = sales[0];
+    check(sale.paymentMethod === 'cari' && sale.customerId === customerId && sale.total === 12.8,
+      'Veresiye fişi prova carisine bağlı olmalı.');
+    check(window.KocCari.customerBalance(cariState, customerId) === 12.8, 'Veresiye cari bakiyesi 12,80 TL olmalı.');
+    return { saleId: sale.id, saleAcknowledgementMs: elapsedMs };
   }
 
   function checkRecovery() {
@@ -237,12 +264,37 @@
     } else {
       check(product()?.n === 'İÇİM ŞÖLEN Prova' && product()?.p === 12.8, 'Türkçe örnek ürün açılışta korunmadı.');
     }
+    if (stage === 'queue') scan(1);
     check(await window.kocApp.flush(), 'Açılış yazmaları diske inmedi.');
     assertCsp();
     const { engine } = await window.kocApp.info();
     check(engine === (stage === 'json' ? 'json' : 'sqlite'), 'Beklenmeyen depo motoru: ' + engine);
     const startup = { engine, startupMs, cspViolations: 0, turkishText: true };
     await note('ready', startup);
+
+    if (stage === 'queue') {
+      check(await maybeDailyBackup() === false && !window.kocStore.read('koc-last-auto-backup-date'),
+        'Açık sepet varken günlük yedek öne geçti.');
+      await invoke('test_delay_next_write', { ms: 2000 });
+      cancelSale();
+      void maybeDailyBackup();
+      check(dailyBackupInProgress && window.kocApp.pendingWrites() > 0,
+        'Geciken günlük yedek doğrulama için başlamadı.');
+      const normalWriteDate = '2001-01-02';
+      window.kocStore.write('koc-son-acilis-gunu', normalWriteDate);
+      prepareCashSale(1, '12,80');
+      click('.btn-finish');
+      await pause(150);
+      check(dataCommitBusy && sales.length === 0 && cart[0]?.q === 1 && pendingSale?.id,
+        'Günlük yedek sürerken satış sırada kalmadı veya sepet erken kapandı.');
+      check(dailyBackupInProgress && !window.kocStore.read('koc-last-auto-backup-date'),
+        'Kapanış talebinden önce yedek gecikmesi bitmemeli.');
+      assertCsp();
+      await note('pass', { ...startup, saleId: pendingSale.id, backupDate: _todayKey(), normalWriteDate,
+        closeWhileBackupAndSalePending: true });
+      await invoke('test_close');
+      return;
+    }
 
     if (stage === 'sqlite') {
       check(sales.length === 0 && product().s === 10, 'İlk prova profili boş olmalı.');
@@ -297,6 +349,11 @@
       check(sales.length === 3 && product().s === 5, 'JSON satışından sonra üç fiş ve stok 5 bekleniyordu.');
     } else if (stage === 'reopen') {
       details = checkRecovery();
+    } else if (stage === 'scale-cash' || stage === 'scale-credit') {
+      check(sales.length === 8241 && product().s === 10, 'Büyük geçmiş provası beklenen başlangıç verisiyle açılmadı.');
+      check(await maybeDailyBackup() === false, 'Ölçüm öncesi günlük yedek tamamlanmış sayılmalı.');
+      details = stage === 'scale-cash' ? await cashSale(1, '12,80', true) : await scaleCreditSale();
+      check(sales.length === 8242 && product().s === 9, 'Büyük geçmiş satışında fiş sayısı veya stok hatalı.');
     } else {
       const baselineSales = sales.length;
       const baselineProducts = products.length;

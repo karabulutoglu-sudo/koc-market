@@ -68,6 +68,15 @@ Testlerden sonra mağazaya dağıtmak için GitHub sürümünde **Set as a pre-r
 kaldır ve **Set as the latest release** seçimini etkinleştir. Tauri güncellemeyi kendi
 güncelleyicisiyle, eski Electron sürümü ise `latest.yml` üzerinden alır.
 
+### SQLite satış geçmişi ve 2.0.4'e dönüş
+
+2.1.0 yeni fişi SQLite'a tek satır olarak ekler. Tam yedekler ve JSON aynası mevcut
+satış dizisi biçimini korur. 2.0.4'e dönmeden önce 2.1.0'ı açıp normal şekilde
+kapatın. Kapanış, eski sürümün okuyacağı güncel satış dizisini diske yazar.
+Güç kesintisinden sonra önce 2.1.0 ile açıp kapatın. Eski sürüm bu kapanışa kadar
+geçişi tamamlanmamış depoyu açamaz. 2.0.4'ün düzgün bir dönüşten sonra kaydettiği
+fişler 2.1.0'a yeniden geçerken güncel satış dizisinden alınır.
+
 ## Electron'u kaldırma (acele yok)
 
 Birkaç hafta sorunsuz çalıştıktan sonra Ayarlar → Uygulamalar'da **eski** "Koç Market"i

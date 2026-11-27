@@ -24,6 +24,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
+#[path = "store_sales.rs"]
+mod sale_rows;
+
 pub type Kv = HashMap<String, String>;
 
 static REPAIR_BACKUP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -86,6 +89,7 @@ pub struct Store {
     json_path: PathBuf,
     fallback_marker: Option<FallbackMarker>,
     closed: bool,
+    row_sales: bool,
     /// Eski program uyarısı "Anladım" denince kaydedilecek yeni taban: (parmak izi, kontrol yedeği)
     pending_electron_ack: Option<(String, Option<String>)>,
 }
@@ -114,6 +118,32 @@ pub struct Op {
     pub key: String,
     pub op: String, // "set" | "del"
     pub val: Option<String>,
+}
+
+fn write_sqlite_ops(tx: &rusqlite::Transaction<'_>, ops: &[Op], row_sales: bool, now: &str) -> Result<(), String> {
+    let table = if row_sales { "koc_live_kv" } else { "kv" };
+    let mut set = tx.prepare_cached(&format!(
+        "INSERT INTO {table} (key,value,updated_at) VALUES (?1,?2,?3)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
+    )).map_err(|e| e.to_string())?;
+    let mut del = tx.prepare_cached(&format!("DELETE FROM {table} WHERE key=?1"))
+        .map_err(|e| e.to_string())?;
+    for op in ops {
+        if !matches!(op.op.as_str(), "set" | "del") {
+            return Err(format!("Bilinmeyen işlem: {}", op.op));
+        }
+        if row_sales && sale_rows::is_legacy_copy(&op.key) { continue; }
+        if row_sales && op.key == sale_rows::KEY {
+            let raw = (op.op == "set").then(|| op.val.as_deref().unwrap_or(""));
+            sale_rows::replace(tx, raw)?;
+        } else if op.op == "set" {
+            set.execute(params![op.key, op.val.as_deref().unwrap_or(""), now])
+                .map_err(|e| e.to_string())?;
+        } else {
+            del.execute([&op.key]).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 // ── Yardımcılar ────────────────────────────────────────────────────
@@ -263,7 +293,16 @@ fn read_json_kv(path: &Path) -> Option<Kv> {
 }
 
 fn read_sqlite_kv(conn: &Connection) -> rusqlite::Result<Kv> {
-    let mut stmt = conn.prepare("SELECT key, value FROM kv")?;
+    read_sqlite_snapshot(conn, "kv")
+}
+
+fn read_sqlite_snapshot(conn: &Connection, table: &str) -> rusqlite::Result<Kv> {
+    let exclude_sentinel = if table == "kv" && sale_rows::active(conn)? {
+        format!(" WHERE key IS NOT {}", sale_rows::ACTIVE_SENTINEL_SQL)
+    } else {
+        String::new()
+    };
+    let mut stmt = conn.prepare(&format!("SELECT key, value FROM {table}{exclude_sentinel}"))?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?.unwrap_or_default()))
     })?;
@@ -469,8 +508,9 @@ impl Store {
 
         match open(&dir) {
             Ok(conn) => {
+                let row_sales = sale_rows::active(&conn).map_err(|e| e.to_string())?;
                 let mut st = Store { dir: dir.clone(), conn: Some(conn), mem: Kv::new(), json_path,
-                    fallback_marker: None, closed: false, pending_electron_ack: None };
+                    fallback_marker: None, closed: false, row_sales, pending_electron_ack: None };
                 st.reconcile_fallback(&mut report)?;
                 st.migrate_if_needed(electron_candidates, &mut report)?; // geçiş hatası = açılma
                 st.check_electron_usage(electron_candidates, &mut report); // yalnızca uyarı, asla engellemez
@@ -502,7 +542,7 @@ impl Store {
                     source_digest,
                 });
                 let st = Store { dir, conn: None, mem, json_path, fallback_marker: Some(marker),
-                    closed: false, pending_electron_ack: None };
+                    closed: false, row_sales: false, pending_electron_ack: None };
                 if !st.json_path.exists() {
                     st.persist_json().map_err(|e| format!("JSON deposu yazılamadı: {e}"))?;
                 }
@@ -525,12 +565,41 @@ impl Store {
 
     fn load_mem_from_sqlite(&mut self) -> rusqlite::Result<()> {
         let conn = self.conn.as_ref().unwrap();
-        self.mem = read_sqlite_kv(conn)?;
+        let table = if self.row_sales { "koc_live_kv" } else { "kv" };
+        self.mem = read_sqlite_snapshot(conn, table)?;
         Ok(())
     }
 
+    pub fn sales_append_enabled(&self) -> bool { self.row_sales }
+
+    pub fn prepare_sale_rows(&mut self) -> Result<(), String> {
+        if self.row_sales || self.conn.is_none() { return Ok(()); }
+        let conn = self.conn.as_mut().unwrap();
+        sale_rows::activate(conn, &self.dir, &self.mem)?;
+        self.row_sales = true;
+        self.mem.retain(|key, _| key != sale_rows::KEY && !sale_rows::is_legacy_copy(key));
+        Ok(())
+    }
+
+    pub fn snapshot(&self) -> Result<Kv, String> {
+        let mut data = self.mem.clone();
+        if self.row_sales {
+            let conn = self.conn.as_ref().ok_or("Satış tablosu kapalı.")?;
+            if let Some(sales) = sale_rows::projected(conn).map_err(|e| e.to_string())? {
+                data.insert(sale_rows::KEY.into(), sales);
+            }
+        }
+        Ok(data)
+    }
+
+    pub fn stored_sale(&self, id: &str) -> Result<Option<String>, String> {
+        if !self.row_sales { return Err("Satış satırı motoru hazır değil.".into()); }
+        let conn = self.conn.as_ref().ok_or("Satış tablosu kapalı.")?;
+        sale_rows::stored(conn, id).map_err(|e| e.to_string())
+    }
+
     fn reconcile_fallback(&mut self, report: &mut InitReport) -> Result<(), String> {
-        let Some(snapshot) = read_json_snapshot(&self.json_path)? else { return Ok(()) };
+        let Some(mut snapshot) = read_json_snapshot(&self.json_path)? else { return Ok(()) };
         if self.meta_get(FALLBACK_APPLIED).as_deref() == Some(snapshot.digest.as_str()) {
             return Ok(());
         }
@@ -538,6 +607,9 @@ impl Store {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
         let sqlite = read_sqlite_kv(&tx).map_err(|e| e.to_string())?;
+        if self.row_sales {
+            snapshot.data.retain(|key, _| !sale_rows::is_legacy_copy(key));
+        }
         if snapshot.marker.is_none() && sqlite == snapshot.data {
             return Ok(());
         }
@@ -559,17 +631,12 @@ impl Store {
             return Err("JSON satışları doğrulanmış SQLite sonucunda eksik kalacaktı. İki kaynak yedeklendi.".into());
         }
         mark_mirror_dirty(&self.json_path)?;
-        for key in sqlite.keys().filter(|key| !merged.contains_key(*key)) {
-            tx.execute("DELETE FROM kv WHERE key=?1", [key]).map_err(|e| e.to_string())?;
-        }
-        let now = now_iso();
-        for (key, value) in merged.iter().filter(|(key, value)| sqlite.get(*key) != Some(*value)) {
-            tx.execute(
-                "INSERT INTO kv (key, value, updated_at) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-                params![key, value, now],
-            ).map_err(|e| e.to_string())?;
-        }
+        let deletes = sqlite.keys().filter(|key| !merged.contains_key(*key))
+            .map(|key| Op { key: key.clone(), op: "del".into(), val: None });
+        let sets = merged.iter().filter(|(key, value)| sqlite.get(*key) != Some(*value))
+            .map(|(key, value)| Op { key: key.clone(), op: "set".into(), val: Some(value.clone()) });
+        let ops: Vec<_> = deletes.chain(sets).collect();
+        write_sqlite_ops(&tx, &ops, self.row_sales, &now_iso())?;
         if read_sqlite_kv(&tx).map_err(|e| e.to_string())? != merged {
             return Err("SQLite uzlaştırma sonucu doğrulanamadı; işlem geri alındı.".into());
         }
@@ -780,7 +847,8 @@ impl Store {
         }
         let backups = self.dir.join("backups");
         fs::create_dir_all(&backups).map_err(|e| format!("Onarım yedek klasörü oluşturulamadı: {e}"))?;
-        let bytes = serde_json::to_vec(&self.mem).map_err(|e| format!("Onarım yedeği hazırlanamadı: {e}"))?;
+        let snapshot = self.snapshot()?;
+        let bytes = serde_json::to_vec(&snapshot).map_err(|e| format!("Onarım yedeği hazırlanamadı: {e}"))?;
         let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|e| format!("Onarım yedek zamanı alınamadı: {e}"))?.as_nanos();
         for _ in 0..100 {
@@ -799,7 +867,7 @@ impl Store {
             let raw = fs::read(&target).map_err(|e| format!("Onarım yedeği doğrulama için okunamadı: {e}"))?;
             let saved: Kv = serde_json::from_slice(&raw)
                 .map_err(|e| format!("Onarım yedeği doğrulanamadı: {e}"))?;
-            if saved != self.mem {
+            if saved != snapshot {
                 return Err("Onarım yedeği güncel veriyle uyuşmuyor; hiçbir kayıt değiştirilmedi".into());
             }
             return Ok(target);
@@ -813,7 +881,7 @@ impl Store {
         if self.closed {
             return Err("Depo kapatıldı".into());
         }
-        if &self.mem != expected {
+        if &self.snapshot()? != expected {
             return Err("Önizlemeden sonra kayıtlar değişti. Güncel veriden yeniden önizleme alın".into());
         }
         let raw = fs::read(backup).map_err(|e| format!("Onarım öncesi yedek okunamadı; hiçbir kayıt değiştirilmedi: {e}"))?;
@@ -850,6 +918,34 @@ impl Store {
         Ok(())
     }
 
+    pub fn append_sale(&mut self, id: &str, serialized_sale: &str, ops: &[Op]) -> Result<(), String> {
+        if self.closed || !self.row_sales {
+            return Err("Satış satırı motoru hazır değil.".into());
+        }
+        if ops.iter().any(|op| op.key == FALLBACK_KEY || op.key == sale_rows::KEY || sale_rows::is_legacy_copy(&op.key)) {
+            return Err("Fiş ekleme işlemi satış geçmişini değiştiremez.".into());
+        }
+        let conn = self.conn.as_mut().ok_or("Satış tablosu kapalı.")?;
+        mark_mirror_dirty(&self.json_path)?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        sale_rows::append(&tx, id, serialized_sale).map_err(|e| e.to_string())?;
+        write_sqlite_ops(&tx, ops, self.row_sales, &now_iso())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        self.update_mem(ops);
+        Ok(())
+    }
+
+    fn update_mem(&mut self, ops: &[Op]) {
+        for op in ops {
+            if self.row_sales && (op.key == sale_rows::KEY || sale_rows::is_legacy_copy(&op.key)) { continue; }
+            if op.op == "set" {
+                self.mem.insert(op.key.clone(), op.val.clone().unwrap_or_default());
+            } else {
+                self.mem.remove(&op.key);
+            }
+        }
+    }
+
     /// Bir grup yazma/silmeyi TEK transaction içinde uygula.
     pub fn apply(&mut self, ops: &[Op]) -> Result<(), String> {
         if self.closed {
@@ -865,28 +961,10 @@ impl Store {
             mark_mirror_dirty(&self.json_path)?;
             let now = now_iso();
             let tx = conn.transaction().map_err(|e| e.to_string())?;
-            {
-                let mut set = tx
-                    .prepare_cached(
-                        "INSERT INTO kv (key, value, updated_at) VALUES (?1, ?2, ?3) \
-                         ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-                    )
-                    .map_err(|e| e.to_string())?;
-                let mut del = tx.prepare_cached("DELETE FROM kv WHERE key=?1").map_err(|e| e.to_string())?;
-                for o in ops {
-                    match o.op.as_str() {
-                        "set" => { set.execute(params![o.key, o.val.as_deref().unwrap_or(""), now]).map_err(|e| e.to_string())?; }
-                        "del" => { del.execute(params![o.key]).map_err(|e| e.to_string())?; }
-                        other => return Err(format!("Bilinmeyen işlem: {other}")),
-                    }
-                }
-            }
+            write_sqlite_ops(&tx, ops, self.row_sales, &now)?;
             tx.commit().map_err(|e| e.to_string())?;
             // Disk başarılı → belleği güncelle
-            for o in ops {
-                if o.op == "set" { self.mem.insert(o.key.clone(), o.val.clone().unwrap_or_default()); }
-                else { self.mem.remove(&o.key); }
-            }
+            self.update_mem(ops);
             Ok(())
         } else {
             let backup = self.mem.clone();
@@ -911,22 +989,24 @@ impl Store {
     }
 
     pub fn synchronize_mirror(&self) -> Result<(), String> {
-        if self.conn.is_none() || self.mem.is_empty() {
+        if self.conn.is_none() {
             return Ok(());
         }
+        let data = self.snapshot()?;
+        if data.is_empty() { return Ok(()); }
         if let Some(snapshot) = read_json_snapshot(&self.json_path)? {
             if snapshot.marker.is_some()
                 && self.meta_get(FALLBACK_APPLIED).as_deref() != Some(snapshot.digest.as_str()) {
                 return Err("Uzlaştırılmamış JSON kaydı korunuyor; ayna güncellenmedi.".into());
             }
             let clean = format!("clean:{}", snapshot.digest);
-            if snapshot.marker.is_none() && snapshot.data == self.mem
+            if snapshot.marker.is_none() && snapshot.data == data
                 && mirror_state(&self.json_path)?.as_deref() == Some(clean.as_str()) {
                 return Ok(());
             }
         }
         mark_mirror_dirty(&self.json_path)?;
-        let bytes = serde_json::to_vec(&self.mem).map_err(|err| err.to_string())?;
+        let bytes = serde_json::to_vec(&data).map_err(|err| err.to_string())?;
         atomic_write(&self.json_path, &bytes).map_err(|err| err.to_string())?;
         let saved = fs::read(&self.json_path).map_err(|err| err.to_string())?;
         if saved != bytes {
@@ -937,18 +1017,43 @@ impl Store {
             .map_err(|err| err.to_string())
     }
 
-    /// Düzgün kapanış: aynayı tazele, WAL'ı ana dosyaya işle, bağlantıyı kapat.
-    pub fn shutdown(&mut self) {
-        if self.closed {
-            return;
+    pub fn checkpoint(&self) -> Result<(), String> {
+        let Some(conn) = self.conn.as_ref() else { return Ok(()); };
+        let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        if busy != 0 { return Err("SQLite günlüğü kullanımda; kapanış henüz doğrulanamadı.".into()); }
+        Ok(())
+    }
+
+    /// Düzgün kapanış: aynayı ve eski sürüm görünümünü doğrula, WAL'ı ana dosyaya işle.
+    pub fn shutdown(&mut self) -> Result<(), String> {
+        if self.closed { return Ok(()); }
+        self.synchronize_mirror()?;
+        let was_row_sales = self.row_sales;
+        self.checkpoint()?;
+        if was_row_sales {
+            let conn = self.conn.as_mut().ok_or("Satış tablosu kapalı.")?;
+            if let Some(sales) = sale_rows::finish(conn)? {
+                self.mem.insert(sale_rows::KEY.into(), sales);
+            }
+            self.row_sales = false;
+            if let Err(error) = self.checkpoint() {
+                // Uyumluluk işlemi kalıcı ve SQLite, ana dosyayla birlikte
+                // kalan WAL üzerinden onu okuyabilir. Başka okuyucu varsa
+                // tekrar `kv` şemasını değiştirerek kapanışı geri çevirme.
+                log_line(&self.dir, &format!("Uyumluluk kaydı tamamlandı; WAL dosyası bekliyor: {error}"));
+            }
         }
-        self.refresh_mirror();
         if let Some(conn) = self.conn.take() {
-            let _ = conn.pragma_update(None, "wal_checkpoint", "TRUNCATE");
-            let _ = conn.close();
+            if let Err((conn, err)) = conn.close() {
+                self.conn = Some(conn);
+                if was_row_sales { self.prepare_sale_rows()?; }
+                return Err(err.to_string());
+            }
         }
         self.closed = true;
         log_line(&self.dir, "Depo düzgün kapatıldı.");
+        Ok(())
     }
 }
 
@@ -1010,7 +1115,7 @@ mod repair_tests {
         let mut store = Store {
             dir: dir.0.clone(), conn, mem: Kv::new(), json_path: dir.0.join("koc-data.json"),
             fallback_marker: if sqlite { None } else { Some(FallbackMarker { version: 1, baseline: Kv::new(), source_digest: None }) },
-            closed: false, pending_electron_ack: None,
+            closed: false, row_sales: false, pending_electron_ack: None,
         };
         let products = json!([{"b":"8691234567890","n":"ÃœLKER ÅžEKER","p":12.5,"s":9,"c":"GIDA","k":20}]);
         let sales = json!([{
@@ -1044,9 +1149,7 @@ mod repair_tests {
 
     fn disk_snapshot(store: &Store) -> Kv {
         if let Some(conn) = store.conn.as_ref() {
-            let mut stmt = conn.prepare("SELECT key, value FROM kv").unwrap();
-            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).unwrap();
-            rows.map(|r| r.unwrap()).collect()
+            read_sqlite_kv(conn).unwrap()
         } else {
             read_json_kv(&store.json_path).unwrap()
         }
@@ -1055,6 +1158,101 @@ mod repair_tests {
     fn assert_preserved(store: &Store, expected: &Kv) {
         assert_eq!(&store.mem, expected);
         assert_eq!(&disk_snapshot(store), expected);
+    }
+
+    fn set_op(key: &str, value: &str) -> Op {
+        Op { key: key.into(), op: "set".into(), val: Some(value.into()) }
+    }
+
+    #[test]
+    fn interrupted_row_store_rejects_legacy_startup_and_clean_export_allows_legacy_sales() {
+        let (dir, mut store) = seeded(true);
+        let original = store.snapshot().unwrap();
+        store.apply(&[set_op("koc-sales-shadow", &original["koc-sales"])]).unwrap();
+        store.synchronize_mirror().unwrap();
+        store.prepare_sale_rows().unwrap();
+        let saved_recovery = fs::read_dir(dir.0.join("backups")).unwrap().flatten()
+            .find(|entry| entry.file_name().to_string_lossy().ends_with("-satis-kopyalari.json")).unwrap();
+        assert_eq!(read_json_kv(&saved_recovery.path()).unwrap()["koc-sales-shadow"], original["koc-sales"]);
+        let new_sale = r#"{"id":"fresh","total":60.0,"items":[{"p":60.0}]}"#;
+        let original_stock = original["koc-prods"].clone();
+        let next_stock = original_stock.replace("\"s\":9", "\"s\":8");
+        store.append_sale("fresh", new_sale, &[set_op("koc-prods", &next_stock)]).unwrap();
+        assert!(!store.mem.contains_key("koc-sales"));
+        drop(store); // Ani kapanma: uyumluluk tablosuna aktarım yapılmaz.
+
+        let old = Connection::open(dir.0.join("kocmarket.db")).unwrap();
+        old.execute_batch("CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY,value TEXT,updated_at TEXT);").unwrap();
+        {
+            let mut stmt = old.prepare("SELECT key, value FROM kv").unwrap();
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?.unwrap_or_default()))
+            }).unwrap();
+            assert!(matches!(rows.collect::<rusqlite::Result<Kv>>(), Err(rusqlite::Error::InvalidColumnType(0, _, rusqlite::types::Type::Blob))));
+        }
+        let visible = read_sqlite_kv(&old).unwrap();
+        assert!(visible["koc-sales"].starts_with(&format!("[{new_sale},")));
+        assert_eq!(visible["koc-prods"], next_stock);
+        assert!(!visible.contains_key("koc-sales-shadow"));
+        assert!(old.execute("INSERT INTO kv(key,value,updated_at) VALUES ('koc-sales','[]','old') ON CONFLICT(key) DO UPDATE SET value=excluded.value", []).is_err());
+        drop(old);
+
+        let (mut reopened, _) = Store::init(dir.0.clone(), &[]).unwrap();
+        assert!(reopened.sales_append_enabled());
+        assert_eq!(reopened.stored_sale("fresh").unwrap().as_deref(), Some(new_sale));
+        assert_eq!(reopened.snapshot().unwrap(), visible);
+        reopened.shutdown().unwrap();
+
+        let old = Connection::open(dir.0.join("kocmarket.db")).unwrap();
+        assert!(!sale_rows::active(&old).unwrap());
+        let old_sale = r#"{"id":202.0,"total":17.0,"items":[]}"#;
+        let legacy_sales = format!("[{old_sale},{}", &visible["koc-sales"][1..]);
+        old.execute("INSERT INTO kv(key,value,updated_at) VALUES ('koc-sales', ?1, 'old') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&legacy_sales]).unwrap();
+        drop(old);
+
+        let (mut migrated_again, _) = Store::init(dir.0.clone(), &[]).unwrap();
+        migrated_again.prepare_sale_rows().unwrap();
+        assert_eq!(migrated_again.stored_sale("202").unwrap().as_deref(), Some(old_sale));
+        assert_eq!(migrated_again.stored_sale("fresh").unwrap().as_deref(), Some(new_sale));
+        assert_eq!(migrated_again.snapshot().unwrap()["koc-sales"], legacy_sales);
+        migrated_again.shutdown().unwrap();
+        assert_eq!(read_json_kv(&dir.0.join("koc-data.json")).unwrap()["koc-sales"], legacy_sales);
+    }
+
+    #[test]
+    fn row_sale_failure_rolls_back_receipt_and_stock_and_normalized_duplicate_cannot_migrate() {
+        let (_dir, mut store) = seeded(true);
+        let invalid = r#"[{"id":101.0,"total":12.0},{"id":"101","total":15.0}]"#;
+        let original = store.snapshot().unwrap()["koc-sales"].clone();
+        store.apply(&[set_op("koc-sales", invalid)]).unwrap();
+        assert!(store.prepare_sale_rows().is_err());
+        assert_eq!(store.snapshot().unwrap()["koc-sales"], invalid);
+        assert!(!sale_rows::active(store.conn.as_ref().unwrap()).unwrap());
+        store.apply(&[set_op("koc-sales", &original)]).unwrap();
+        store.prepare_sale_rows().unwrap();
+        store.conn.as_ref().unwrap().execute_batch(
+            "CREATE TRIGGER abort_test_stock BEFORE UPDATE ON koc_live_kv WHEN NEW.key='koc-prods'
+             BEGIN SELECT RAISE(ABORT, 'test stock error'); END;"
+        ).unwrap();
+        let before = store.snapshot().unwrap();
+        assert!(store.append_sale("rollback", r#"{"id":"rollback"}"#, &[set_op("koc-prods", "[]")]).is_err());
+        assert!(store.stored_sale("rollback").unwrap().is_none());
+        assert_eq!(store.snapshot().unwrap(), before);
+    }
+
+    #[test]
+    fn row_sales_repair_replaces_receipt_rows_with_verified_backup() {
+        let (_dir, mut store) = seeded(true);
+        store.prepare_sale_rows().unwrap();
+        let expected = store.snapshot().unwrap();
+        let changes = text_changes(&expected);
+        let backup = store.repair_backup().unwrap();
+        store.apply_repair(&expected, &changes, &backup).unwrap();
+        let repaired = store.stored_sale("101").unwrap().unwrap();
+        assert!(repaired.contains("ÜLKER ŞEKER") && repaired.contains("25.0"));
+        assert_eq!(disk_snapshot(&store)["koc-sales"], changes["koc-sales"]);
+        assert_eq!(serde_json::from_slice::<Kv>(&fs::read(backup).unwrap()).unwrap(), expected);
+        store.shutdown().unwrap();
     }
 
     #[test]
@@ -1075,7 +1273,7 @@ mod repair_tests {
             assert_eq!(fs::read(&first).unwrap(), first_bytes);
             assert!(second.exists());
             assert_preserved(&store, &store.mem);
-            store.shutdown();
+            store.shutdown().unwrap();
         }
     }
 
@@ -1105,7 +1303,7 @@ mod repair_tests {
             assert_eq!(store.mem["koc-settings"], expected["koc-settings"]);
             assert_eq!(serde_json::from_slice::<Kv>(&fs::read(&backup).unwrap()).unwrap(), expected);
             assert_eq!(read_json_kv(&store.json_path).unwrap(), repaired);
-            store.shutdown();
+            store.shutdown().unwrap();
         }
     }
 
@@ -1129,7 +1327,7 @@ mod repair_tests {
             assert_eq!(shadow[0]["p"], 1.0);
             assert_eq!(shadow[0]["n"], "ÜLKER ŞEKER");
             assert_eq!(store.mem["koc-sales-emergency"], emergency);
-            store.shutdown();
+            store.shutdown().unwrap();
         }
     }
 
@@ -1150,7 +1348,7 @@ mod repair_tests {
                 let current = store.mem.clone();
                 assert!(store.apply_repair(&expected, &changes, &backup).is_err());
                 assert_preserved(&store, &current);
-                store.shutdown();
+                store.shutdown().unwrap();
             }
         }
     }
@@ -1175,7 +1373,7 @@ mod repair_tests {
                 }
                 assert!(store.apply_repair(&expected, &changes, &backup).is_err(), "{kind}");
                 assert_preserved(&store, &expected);
-                store.shutdown();
+                store.shutdown().unwrap();
             }
         }
     }
@@ -1192,7 +1390,7 @@ mod repair_tests {
             let backup = store.dir.join("backups").join("missing.json");
             assert!(store.apply_repair(&expected, &changes, &backup).is_err());
             assert_preserved(&store, &expected);
-            store.shutdown();
+            store.shutdown().unwrap();
         }
     }
 
@@ -1207,7 +1405,7 @@ mod repair_tests {
                 assert!(store.apply_repair(&expected, &changes, &backup).is_err(), "{key}");
                 assert_preserved(&store, &expected);
             }
-            store.shutdown();
+            store.shutdown().unwrap();
         }
     }
 
@@ -1237,7 +1435,7 @@ mod repair_tests {
                 assert!(store.apply_repair(&expected, &changes, &backup).is_err());
                 assert_preserved(&store, &expected);
             }
-            store.shutdown();
+            store.shutdown().unwrap();
         }
     }
 
@@ -1254,7 +1452,7 @@ mod repair_tests {
         assert!(store.apply_repair(&expected, &changes, &backup).is_err());
         assert_preserved(&store, &expected);
         assert_eq!(serde_json::from_slice::<Kv>(&fs::read(&backup).unwrap()).unwrap(), expected);
-        store.shutdown();
+        store.shutdown().unwrap();
     }
 
     #[test]
@@ -1270,7 +1468,7 @@ mod repair_tests {
         assert!(store.apply_repair(&expected, &changes, &backup).is_err());
         assert_eq!(store.mem, expected);
         assert_eq!(read_json_kv(&original_path).unwrap(), expected);
-        store.shutdown();
+        store.shutdown().unwrap();
     }
 
     #[test]
@@ -1280,7 +1478,7 @@ mod repair_tests {
             let expected = store.mem.clone();
             let changes = text_changes(&expected);
             let backup = store.repair_backup().unwrap();
-            store.shutdown();
+            store.shutdown().unwrap();
             assert!(store.repair_backup().is_err());
             assert!(store.apply_repair(&expected, &changes, &backup).is_err());
             assert_eq!(store.mem, expected);
@@ -1324,13 +1522,13 @@ mod repair_tests {
         let after = scenario_keys(true);
         let (mut sqlite, _) = Store::init(dir.0.clone(), &[]).unwrap();
         write_scenario(&mut sqlite, &before);
-        sqlite.shutdown();
+        sqlite.shutdown().unwrap();
 
         let (mut fallback, _) = Store::init_with_sqlite(dir.0.clone(), &[], unavailable_sqlite).unwrap();
         assert_eq!(fallback.engine(), "json");
         assert_eq!(fallback.mem, before);
         write_scenario(&mut fallback, &after);
-        fallback.shutdown();
+        fallback.shutdown().unwrap();
         let json_path = dir.0.join("koc-data.json");
         let pending = fs::read(&json_path).unwrap();
         let reopened_pending = read_json_snapshot(&json_path).unwrap().unwrap();
@@ -1352,7 +1550,7 @@ mod repair_tests {
         let (mut reopened, _) = Store::init(dir.0.clone(), &[]).unwrap();
         assert_preserved(&reopened, &after);
         assert_eq!(fs::read_dir(dir.0.join("backups")).unwrap().count(), 2);
-        reopened.shutdown();
+        reopened.shutdown().unwrap();
         let mirrored = read_json_snapshot(&json_path).unwrap().unwrap();
         assert!(mirrored.marker.is_none());
         assert_eq!(mirrored.data, after);
@@ -1363,10 +1561,10 @@ mod repair_tests {
         let dir = TestDir::new();
         let (mut sqlite, _) = Store::init(dir.0.clone(), &[]).unwrap();
         write_scenario(&mut sqlite, &scenario_keys(false));
-        sqlite.shutdown();
+        sqlite.shutdown().unwrap();
         let (mut fallback, _) = Store::init_with_sqlite(dir.0.clone(), &[], unavailable_sqlite).unwrap();
         write_scenario(&mut fallback, &scenario_keys(true));
-        fallback.shutdown();
+        fallback.shutdown().unwrap();
         let json_path = dir.0.join("koc-data.json");
         let pending = fs::read(&json_path).unwrap();
         let conn = Store::open_sqlite(&dir.0).unwrap();
@@ -1440,7 +1638,7 @@ mod repair_tests {
         let backup = latest_backup(&destination.0.join("backups"), "electron-gecis-yedek-").unwrap();
         assert_eq!(read_json_kv(&backup).unwrap(), expected);
         for (path, bytes) in source_files { assert_eq!(fs::read(path).unwrap(), bytes); }
-        store.shutdown();
+        store.shutdown().unwrap();
         drop(conn);
     }
 
@@ -1456,7 +1654,7 @@ mod repair_tests {
         assert_eq!(report.migrated_keys, expected.len());
         assert_preserved(&store, &expected);
         assert_eq!(fs::read(path).unwrap(), bytes);
-        store.shutdown();
+        store.shutdown().unwrap();
     }
 
     #[test]
@@ -1471,10 +1669,10 @@ mod repair_tests {
         current.insert("koc-sales".into(), json!([{"id":"sale-1","total":81},{"id":"sale-2","name":"İÇİM SÜT","total":90}]).to_string());
         let ops: Vec<Op> = current.iter().map(|(key,val)| Op {key:key.clone(),op:"set".into(),val:Some(val.clone())}).collect();
         store.apply(&ops).unwrap();
-        store.shutdown();
+        store.shutdown().unwrap();
         let (mut reopened, report) = Store::init(destination.0.clone(), &[source.0.clone()]).unwrap();
         assert!(report.migrated_from.is_none());
         assert_preserved(&reopened, &current);
-        reopened.shutdown();
+        reopened.shutdown().unwrap();
     }
 }

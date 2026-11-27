@@ -7,11 +7,11 @@ const vm = require('node:vm');
 const bridge = fs.readFileSync(path.join(__dirname, '../src-tauri/src/bridge.js'), 'utf8');
 const marker = 'koc-atomic-last-operation';
 
-function setup(invoke = async () => {}, bootData = {}) {
+function setup(invoke = async () => {}, bootData = {}, {engine = 'sqlite', saleAppend = false} = {}) {
   const calls = [], timers = new Map(), warning = [];
   let now = 0, timerId = 0, reloads = 0;
   const window = {
-    __KOC_BOOT__: { data: bootData, engine: 'SQLite' },
+    __KOC_BOOT__: { data: bootData, engine, saleAppend },
     __TAURI_INTERNALS__: {
       invoke(command, args) {
         calls.push({ command, args });
@@ -59,7 +59,6 @@ test('ordinary writes precede one acknowledged transaction for stock, receipt an
   });
   assert.equal(s.calls.length, 1);
   assert.equal(s.window.kocStore.read('koc-prods'), '10');
-  await assert.rejects(s.window.kocStore.commit('other-transaction', { 'koc-prods': '0' }), /Toplu kayıt/);
   assert.throws(() => s.window.kocStore.write('koc-prods', '3'), /Toplu kayıt/);
   assert.equal(s.window.kocStore.commit('sale-id', { 'koc-prods': '8' }), sale);
 
@@ -236,6 +235,121 @@ test('successful daily backup does not clear an independent sale failure', async
   assert.equal(store.read('koc-sales'), '["sale-id"]');
 });
 
+test('daily backup queues ordinary writes before FIFO commits and close waits for all acknowledgements', async () => {
+  const writes = [deferred(), deferred(), deferred(), deferred()];
+  let nextWrite = 0;
+  const s = setup(command => command === 'kv_apply' ? writes[nextWrite++].promise : Promise.resolve());
+  const store = s.window.kocStore;
+  const backup = store.commit('backup-id', dailyBackup);
+  const first = store.commit('first-sale', { 'koc-sales': '["first-sale"]' });
+  const second = store.commit('second-sale', { 'koc-sales': '["second-sale","first-sale"]' });
+  assert.equal(store.commit('second-sale', { 'koc-sales': '[]' }), second);
+  assert.equal(store.write('koc-last-auto-backup-date', '2026-11-28'), true);
+  const close = s.window.__kocFlushAndClose(5);
+  assert.equal(s.window.kocApp.pendingWrites(), 4);
+  assert.equal(nextWrite, 1);
+  assert.equal(store.read('koc-sales'), null);
+
+  writes[0].resolve();
+  await backup;
+  assert.equal(s.calls[1].args.ops[0].key, 'koc-last-auto-backup-date');
+  assert.equal(store.read('koc-last-auto-backup-date'), '2026-11-28');
+  writes[1].resolve();
+  await settle();
+  assert.equal(s.calls[2].args.ops.at(-1).val, 'first-sale');
+  assert.equal(store.read('koc-sales'), null);
+  writes[2].resolve();
+  await first;
+  assert.equal(s.calls[3].args.ops.at(-1).val, 'second-sale');
+  assert.equal(store.read('koc-sales'), '["first-sale"]');
+  assert.equal(s.calls.length, 4);
+  writes[3].resolve();
+  await second;
+  assert.equal(await close, true);
+  assert.equal(s.calls.at(-1).command, 'flush_done');
+  assert.equal(store.read('koc-sales'), '["second-sale","first-sale"]');
+});
+
+test('sale queued during backup stays pending across close timeout and continues after backup rejection', async () => {
+  const backupDisk = deferred();
+  const saleDisk = deferred();
+  const s = setup(async command => {
+    if (command === 'kv_apply') return backupDisk.promise;
+    if (command === 'sale_append') return saleDisk.promise;
+  }, {}, {saleAppend:true});
+  const store = s.window.kocStore;
+  const backup = store.commit('backup-id', dailyBackup);
+  const sale = store.commitSale('sale-id', { id:'sale-id' }, { 'koc-prods':'[]' });
+  const close = s.window.__kocFlushAndClose(5);
+  s.advance(7000);
+  assert.equal(await close, false);
+  assert.deepEqual(s.calls.map(call => call.command), ['kv_apply', 'flush_blocked']);
+  assert.equal(s.window.kocApp.pendingWrites(), 2);
+
+  backupDisk.reject('disk busy');
+  await assert.rejects(backup, /disk busy/);
+  assert.equal(s.calls[2].command, 'sale_append');
+  assert.equal(store.read('koc-last-auto-backup-date'), null);
+  saleDisk.resolve({ alreadyCommitted:false });
+  await sale;
+  assert.equal(await s.window.__kocFlushAndClose(6), true);
+  assert.equal(store.read('koc-sales'), '[{"id":"sale-id"}]');
+  assert.equal(s.calls.at(-1).command, 'flush_done');
+});
+
+test('a queued transaction success cannot hide a preceding disk failure', async () => {
+  const failedDisk = deferred();
+  let writes = 0;
+  const s = setup(async command => { if (command === 'kv_apply' && ++writes === 1) return failedDisk.promise; });
+  const store = s.window.kocStore;
+  const held = { 'koc-held':'["parked"]' };
+  const first = store.commit('park-cart', held);
+  const second = store.commit('other-change', { 'koc-settings':'[]' });
+  failedDisk.reject('disk busy');
+  await assert.rejects(first, /disk busy/);
+  await second;
+  assert.equal(await s.window.__kocFlushAndClose(1), false);
+  assert.equal(s.calls.at(-1).args.reason, 'write_failed');
+  assert.equal(store.read('koc-held'), null);
+  await store.commit('park-cart', held);
+  assert.equal(await s.window.__kocFlushAndClose(2), true);
+});
+
+test('SQLite sends individual receipts and preserves the legacy sales view until a replacement', async () => {
+  const s = setup(async () => ({alreadyCommitted:false}), { 'koc-sales':'[{"id":17,"total":60.0}]' }, {saleAppend:true});
+  const store = s.window.kocStore;
+  const receipt = { id:'first', total:18 };
+  const first = store.commitSale('first', receipt, { 'koc-prods':'["first"]' });
+  receipt.total = 45;
+  const second = store.commitSale('second', {id:'second', total:11}, { 'koc-prods':'["second"]' });
+  await Promise.all([first, second]);
+  assert.deepEqual(s.calls.map(call => call.command), ['sale_append', 'sale_append']);
+  const firstCall = JSON.parse(JSON.stringify(s.calls[0].args));
+  assert.deepEqual(firstCall.sale, {id:'first', total:18});
+  assert.deepEqual(firstCall.ops.map(op => op.key), ['koc-prods', marker]);
+  const canonical = '[{"id":"second","total":11},{"id":"first","total":18},{"id":17,"total":60.0}]';
+  assert.equal(store.read('koc-sales'), canonical);
+  assert.equal(s.window.kocDB.getAll()['koc-sales'], canonical);
+  assert.equal((await store.commitSale('first', {id:'first'}, { 'koc-prods':'[]' })).alreadyCommitted, true);
+  assert.equal(s.calls.length, 2);
+  await store.commit('restore', { 'koc-sales':'[{"id":"replacement"}]' });
+  assert.equal(store.read('koc-sales'), '[{"id":"replacement"}]');
+  assert.equal(setup().window.kocStore.commitSale, undefined);
+  assert.equal(setup(undefined, {}, {engine:'json', saleAppend:true}).window.kocStore.commitSale, undefined);
+});
+
+test('a native replay uses authoritative related values and adds a receipt only if missing', async () => {
+  const s = setup(async () => ({ alreadyCommitted:true, values:{ 'koc-prods':'["saved"]', [marker]:'later' } }),
+    { 'koc-sales':'[{"id":"recorded"}]' }, {saleAppend:true});
+  const store = s.window.kocStore;
+  for (const id of ['recorded', 'previous-ack-lost']) {
+    assert.equal((await store.commitSale(id, {id}, { 'koc-prods':'["old"]' })).alreadyCommitted, true);
+  }
+  assert.equal(store.read('koc-sales'), '[{"id":"previous-ack-lost"},{"id":"recorded"}]');
+  assert.equal(store.read('koc-prods'), '["saved"]');
+  assert.equal(store.read(marker), 'later');
+});
+
 test('reload and close timeouts with a delayed write never tell native code the data is ready', async () => {
   const diskWrite = deferred();
   const s = setup(command => command === 'kv_apply' ? diskWrite.promise : Promise.resolve());
@@ -284,4 +398,14 @@ test('a busy or obsolete native close acknowledgement leaves the next retry avai
   assert.equal(s.window.kocStore.write('koc-sales', '[]'), true);
   assert.equal(await s.window.__kocFlushAndClose(2), true);
   assert.deepEqual(s.calls.map(x => x.command), ['flush_done', 'kv_apply', 'flush_done']);
+});
+
+test('a failed native shutdown after acknowledgement lets the cashier save and retry', async () => {
+  const s = setup();
+  assert.equal(await s.window.__kocFlushAndClose(1), true);
+  assert.throws(() => s.window.kocStore.write('koc-test', 'value'), /kapanış/);
+  s.window.__kocCloseFailed();
+  assert.equal(s.window.kocStore.write('koc-test', 'value'), true);
+  assert.equal(await s.window.__kocFlushAndClose(2), true);
+  assert.deepEqual(s.calls.map(call => call.command), ['flush_done', 'kv_apply', 'flush_done']);
 });

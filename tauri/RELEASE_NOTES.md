@@ -2,6 +2,7 @@
 
 - Satış tutarları kuruş üzerinden hesaplanır. CSV içe aktarımında ondalık virgül ve nokta ile yüzde sıfır KDV desteklenir. Eski fişler satış anındaki KDV oranını kullanır.
 - Nakit ve veresiye satışlar stok ve ilgili cari hareketlerle birlikte kaydedilir. Bekletilen sepet ancak kayıt onayından sonra kapanır.
+- SQLite kullanan kasada yeni fiş tek satır olarak eklenir. Açık sepet veya ödeme sırasında günlük yedek ertelenir. Yazımı başlamış bir yedekte kasa işlemi sıraya alınır.
 - Cari avans ödemeleri sonraki borçlardan düşülür. Hareketi olan cari pasife alınabilir. Cari yedeklerinde bakiye, hareketler ve satış bağlantıları birlikte korunur.
 - İlk açılışta günlük yedek alınır. Günlük yedek ve gün bilgisi birlikte kaydedilir. Depolama motoru değişiminde doğrulanmış kaynak yedekleri korunur.
 - Kasa ve yönetici yetkileri ayrıldı. Yönetici PIN'i güvenli özetle saklanır. PDF fiyat listeleri internet bağlantısı olmadan okunabilir.

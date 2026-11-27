@@ -109,7 +109,9 @@ function Run-InstalledBinary($binary, $version, $port) {
                 if (Get-ItemProperty -LiteralPath $policyPath -Name $policyName -ErrorAction SilentlyContinue) {
                     throw 'Geçici VM üzerinde beklenmeyen WebView2 ilkesi var.'
                 }
-                $null = New-Item -Path $policyPath -Force
+                if (-not (Test-Path -LiteralPath $policyPath)) {
+                    $null = New-Item -Path $policyPath -Force
+                }
                 $null = New-ItemProperty -LiteralPath $policyPath -Name $policyName -Value $debugArguments -PropertyType String
                 $policyAdded = $true
             } else { $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $debugArguments }

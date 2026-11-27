@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - 'codex/**'
+      - '!codex/yayin1-onsurum-kabul'
   workflow_dispatch:
 
 permissions:

@@ -1,6 +1,6 @@
 {
   "name": "koc-market",
-  "version": "1.0.31",
+  "version": "1.1.0",
   "description": "Koç Market - Satış Sistemi (Electron masaüstü uygulaması)",
   "main": "main.js",
   "author": "Koç Market",
@@ -19,16 +19,19 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.10.0",
-    "electron-updater": "^6.2.1"
+    "electron-updater": "^6.2.1",
+    "pdfjs-dist": "6.5.438"
   },
   "build": {
     "appId": "com.kocmarket.app",
     "productName": "Koç Market",
     "files": [
       "main.js",
+      "native-authorization.js",
       "preload.js",
       "barcode-core.js",
       "cari-core.js",
+      "pdf-loader.mjs",
       "RELEASE_NOTES.md",
       "index.html",
       "build/**/*"

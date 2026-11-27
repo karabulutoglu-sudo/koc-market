@@ -14,7 +14,7 @@ function setup(handler = async () => {}, globals = '') {
     addEventListener(name, fn) { events[name] = fn; }
   };
   const context = vm.createContext({ window, location: { reload() { reloads++; } },
-    document: { body: null, addEventListener() {} }, setTimeout() {}, console });
+    document: { body: null, addEventListener() {} }, setTimeout() {}, clearTimeout() {}, console });
   if (globals) vm.runInContext(globals, context);
   vm.runInContext(bridge, context);
   return { window, calls, events, context, reloads: () => reloads };

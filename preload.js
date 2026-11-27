@@ -1,4 +1,4 @@
-// preload.js — renderer ile main arasında güvenli, SENKRON disk depolama köprüsü.
+// preload.js — renderer ile main arasındaki depolama köprüsü.
 // contextIsolation:true + nodeIntegration:false altında çalışır.
 // Mevcut kod senkron localStorage gibi çalıştığı için sendSync kullanıyoruz;
 // böylece çağrı yerlerini async'e çevirmeye gerek kalmaz.
@@ -12,7 +12,9 @@ contextBridge.exposeInMainWorld('kocStore', {
   // Anahtarı sil → true/false
   remove: (key)      => ipcRenderer.sendSync('kocstore:remove', String(key)),
   // Tüm anahtarları döndür → string[]
-  keys:   ()         => ipcRenderer.sendSync('kocstore:keys')
+  keys:   ()         => ipcRenderer.sendSync('kocstore:keys'),
+  // Satış ve geri yükleme grupları kalıcı yazım tamamlanınca çözülür.
+  commit: (operationId, entries) => ipcRenderer.invoke('kocstore:commit', { operationId, entries })
 });
 
 // NOT: 'kocWin' köprüsü (refocus/reclaim/dialogOpen) KALDIRILDI — odak çalma
@@ -39,4 +41,13 @@ contextBridge.exposeInMainWorld('kocFile', {
     ipcRenderer.invoke('kocfile:save', { defaultName: String(defaultName), contents: String(contents) }),
   // Dosya seçtir, içeriğini oku → {ok,contents,path} | {canceled} | {ok:false,error}
   open: () => ipcRenderer.invoke('kocfile:open')
+});
+
+contextBridge.exposeInMainWorld('kocAdmin', {
+  status: () => ipcRenderer.invoke('admin:status'),
+  lock: () => ipcRenderer.invoke('admin:lock'),
+  unlock: pin => ipcRenderer.invoke('admin:unlock', String(pin)),
+  changePin: (currentPin,newPin) => ipcRenderer.invoke('admin:change-pin', {
+    currentPin:String(currentPin), newPin:String(newPin)
+  })
 });

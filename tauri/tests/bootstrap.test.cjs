@@ -25,7 +25,7 @@ function bridgeContext(persisted) {
   };
   const context = vm.createContext({
     window, document: { readyState: 'loading', body: null, addEventListener() {} },
-    setTimeout() {}, console
+    setTimeout() {}, clearTimeout() {}, console
   });
   return { context, window };
 }

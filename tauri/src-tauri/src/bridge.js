@@ -4,10 +4,10 @@
 // window.kocFile. index.html'de hiçbir değişiklik gerekmez.
 //
 // OKUMA : Senkron, bellekten (açılışta Rust tüm veriyi sayfaya gömer).
-// YAZMA : Bellek anında güncellenir + sıralı kuyrukla diske (SQLite
-//         transaction). Aynı anahtara art arda yazmalar birleştirilir.
-//         Hata olursa kırmızı uyarı çıkar ve otomatik tekrar denenir.
-// KAPANIŞ: Pencere kapatılınca kuyruk boşalmadan uygulama kapanmaz.
+// YAZMA : Olağan değişiklikler belleğe ve tekrar denenebilen sıraya alınır.
+//         Satış/geri yükleme commit ile tek yerel işlemde diske iner.
+//         Uygulama bu toplu değişiklikleri yalnızca disk onayından sonra görür.
+// KAPANIŞ: Köprü yalnızca başarılı yazımdan sonra kapanışı onaylar.
 // ═══════════════════════════════════════════════════════════════════
 (function () {
   'use strict';
@@ -19,9 +19,15 @@
   var mem = new Map();
   Object.keys(boot.data || {}).forEach(function (k) { mem.set(k, String(boot.data[k])); });
   var repairActive = false;
+  var activeCommit = null;
+  var failedCommit = false;
+  var transition = null;
+  var commitMarker = 'koc-atomic-last-operation';
 
   function ensureWritable() {
     if (repairActive) throw new Error('Türkçe onarım önizlemesi açık. Önce onarımı tamamlayın veya iptal edin.');
+    if (transition) throw new Error('Bekleyen kayıtlar kapanış veya yenileme için diske yazılıyor.');
+    if (activeCommit) throw new Error('Toplu kayıt diske yazılıyor. Önce sonucunu bekleyin.');
   }
 
   function invoke(cmd, args) {
@@ -49,7 +55,7 @@
         await invoke('kv_apply', {
           ops: batch.map(function (e) { return { key: e[0], op: e[1].op, val: e[1].op === 'set' ? e[1].val : null }; })
         });
-        if (failCount) { failCount = 0; showError(null); }
+        if (failCount) { failCount = 0; if (!failedCommit) showError(null); }
       } catch (err) {
         failCount++;
         // Başarısız grubu geri koy — bu arada daha yeni değer geldiyse o kazanır.
@@ -60,8 +66,7 @@
       }
     }
     running = false;
-    var w = idleWaiters; idleWaiters = [];
-    w.forEach(function (fn) { fn(); });
+    notifyIdle();
   }
 
   function enqueue(key, op, val) {
@@ -69,14 +74,73 @@
     schedule();
   }
 
-  // Kuyruk tamamen boşalana kadar bekle (en fazla timeoutMs)
-  function drain(timeoutMs) {
-    if (!running && !pending.size) return Promise.resolve(true);
-    return new Promise(function (resolve) {
-      var done = false;
-      idleWaiters.push(function () { if (!done) { done = true; resolve(true); } });
-      setTimeout(function () { if (!done) { done = true; resolve(false); } }, timeoutMs || 7000);
+  function isIdle(includeCommit) {
+    return !running && !pending.size && (!includeCommit || !activeCommit);
+  }
+
+  function notifyIdle() {
+    idleWaiters.slice().forEach(function (w) {
+      if (isIdle(w.includeCommit)) w.finish(true);
     });
+  }
+
+  // Toplu işlem sıradaki normal yazıları bekler. Çıkış her ikisini de bekler.
+  function drain(timeoutMs, includeCommit) {
+    if (includeCommit === undefined) includeCommit = true;
+    if (isIdle(includeCommit)) return Promise.resolve(true);
+    return new Promise(function (resolve) {
+      var waiter = { includeCommit: includeCommit, finish: function (result) {
+        var index = idleWaiters.indexOf(waiter);
+        if (index === -1) return;
+        idleWaiters.splice(index, 1);
+        clearTimeout(timer);
+        resolve(result);
+      } };
+      idleWaiters.push(waiter);
+      var timer = setTimeout(function () { waiter.finish(false); }, timeoutMs);
+    });
+  }
+
+  function commit(operationId, entries) {
+    try {
+      if (typeof operationId !== 'string' || !operationId.trim()) throw new Error('Geçerli işlem kimliği gerekli.');
+      if (activeCommit && activeCommit.id === operationId) return activeCommit.promise;
+      ensureWritable();
+      if (mem.get(commitMarker) === operationId) return Promise.resolve({ alreadyCommitted: true });
+      if (!entries || typeof entries !== 'object' || Array.isArray(entries)) throw new Error('Geçerli kayıt grubu gerekli.');
+      var ops = Object.entries(entries).map(function (pair) {
+        var key = pair[0], val = pair[1];
+        if (!key || key === commitMarker || (val !== null && typeof val !== 'string')) throw new Error('Kayıt grubu geçersiz.');
+        return { key: key, op: val === null ? 'del' : 'set', val: val };
+      });
+      if (!ops.length) throw new Error('Kayıt grubu boş.');
+      ops.push({ key: commitMarker, op: 'set', val: operationId });
+      var operation = { id: operationId, promise: null };
+      activeCommit = operation;
+      operation.promise = (async function () {
+        try {
+          if (!await drain(15000, false)) throw new Error('Önceki kayıtlar henüz diske yazılmadı.');
+          await invoke('kv_apply', { ops: ops });
+          ops.forEach(function (op) {
+            if (op.op === 'del') mem.delete(op.key);
+            else mem.set(op.key, op.val);
+          });
+          failedCommit = false;
+          showError(null);
+          return { alreadyCommitted: false };
+        } catch (error) {
+          failedCommit = true;
+          showError('KAYIT HATASI: İşlem diske yazılamadı. Tekrar deneyin.\n' + error);
+          throw error;
+        } finally {
+          activeCommit = null;
+          notifyIdle();
+        }
+      })();
+      return operation.promise;
+    } catch (error) {
+      return Promise.reject(error);
+    }
   }
 
   // ── Kırmızı hata şeridi ─────────────────────────────────────────
@@ -111,9 +175,10 @@
   // ── window.kocStore (index.html'in kullandığı) ───────────────────
   var kocStore = {
     read: function (key) { key = String(key); return mem.has(key) ? mem.get(key) : null; },
-    write: function (key, val) { ensureWritable(); key = String(key); val = String(val); mem.set(key, val); enqueue(key, 'set', val); return true; },
-    remove: function (key) { ensureWritable(); key = String(key); mem.delete(key); enqueue(key, 'del', null); return true; },
-    keys: function () { return Array.from(mem.keys()); }
+    write: function (key, val) { ensureWritable(); key = String(key); if (key === commitMarker) throw new Error('İşlem kimliği değiştirilemez.'); val = String(val); mem.set(key, val); enqueue(key, 'set', val); return true; },
+    remove: function (key) { ensureWritable(); key = String(key); if (key === commitMarker) throw new Error('İşlem kimliği değiştirilemez.'); mem.delete(key); enqueue(key, 'del', null); return true; },
+    keys: function () { return Array.from(mem.keys()); },
+    commit: commit
   };
   Object.defineProperty(kocStore, '__tauri', { value: true });
 
@@ -136,13 +201,21 @@
   window.kocStore = Object.freeze(kocStore);
   window.kocDB = Object.freeze(kocDB);
   window.kocFile = Object.freeze(kocFile);
+  window.kocAdmin = Object.freeze({
+    status: function () { return invoke('admin_status'); },
+    lock: function () { return invoke('admin_lock'); },
+    unlock: function (pin) { return invoke('admin_unlock', { pin: String(pin) }); },
+    changePin: function (currentPin, newPin) {
+      return invoke('admin_change_pin', { currentPin: String(currentPin), newPin: String(newPin) });
+    }
+  });
 
   // Tanı / bakım için
   window.kocApp = Object.freeze({
     platform: 'tauri',
     engine: boot.engine,
     info: function () { return invoke('kv_info'); },
-    pendingWrites: function () { return pending.size + (running ? 1 : 0); },
+    pendingWrites: function () { return pending.size + (running ? 1 : 0) + (activeCommit ? 1 : 0); },
     flush: function () { return drain(15000); },
     hasEncodingDamage: function () {
       return ['koc-prods', 'koc-sales', 'koc-held', 'koc-cari-state'].some(function (key) {
@@ -151,6 +224,7 @@
     },
     previewEncodingRepair: async function () {
       if (repairActive) throw new Error('Onarım önizlemesi zaten açık. Önce kapatın.');
+      if (transition || activeCommit || failedCommit) throw new Error('Önce bekleyen kayıt işlemini tamamlayın.');
       if ((typeof cart !== 'undefined' && cart && cart.length) || (typeof paying !== 'undefined' && paying)) {
         throw new Error('Önce açık satışı tamamlayın veya sepeti beklemeye alın.');
       }
@@ -176,14 +250,47 @@
   });
 
   // ── Kapanış ve yenileme: önce kuyruk boşalsın ────────────────────
-  window.__kocFlushAndClose = async function () {
-    await drain(7000);
-    invoke('flush_done');
+  async function finishTransition(kind, action, onBlocked) {
+    if (transition || (kind === 'reload' && repairActive)) {
+      if (onBlocked) await onBlocked('transition');
+      return false;
+    }
+    transition = kind;
+    var acceptedClose = false;
+    var reason;
+    try {
+      var drained = await drain(7000);
+      if (!drained || failedCommit) {
+        reason = drained ? 'write_failed' : 'pending';
+        showError(kind === 'close'
+          ? 'KAYIT HATASI: Kapanış için bekleyen kayıtların disk onayı alınamadı.'
+          : 'KAYIT HATASI: Bekleyen kayıtlar diske yazılmadığı için yenileme durduruldu. Tekrar deneyin.');
+      } else {
+        var accepted = await action();
+        acceptedClose = kind === 'close' && accepted !== false;
+        return accepted !== false;
+      }
+    } catch (error) {
+      showError('KAYIT HATASI: Kapanış veya yenileme tamamlanamadı.\n' + error);
+      reason = 'no_reply';
+    } finally {
+      if (!acceptedClose) transition = null;
+    }
+    if (onBlocked) await onBlocked(reason);
+    return false;
+  }
+
+  window.__kocFlushAndClose = function (generation) {
+    return finishTransition('close',
+      function () { return invoke('flush_done', { generation: generation }); },
+      function (reason) {
+        return invoke('flush_blocked', { generation: generation, reason: reason }).catch(function (error) {
+          showError('KAYIT HATASI: Kapanış engellendi.\n' + error);
+        });
+      });
   };
-  window.__kocReload = async function () {
-    if (repairActive) return;
-    await drain(7000);
-    location.reload();
+  window.__kocReload = function () {
+    return finishTransition('reload', function () { location.reload(); });
   };
 
   // F5 / Ctrl+R ile kontrolsüz yenilemeyi engelle (veri kuyruğu kaybolmasın)

@@ -2,6 +2,9 @@ const { app, BrowserWindow, dialog, ipcMain } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const fs = require('fs')
 const path = require('path')
+const { createHash, randomUUID } = require('crypto')
+const { assertAuthorized, createSession, pinKey, startupMigrations } = require('./native-authorization')
+const admin = createSession()
 
 const isDev = !app.isPackaged
 
@@ -14,7 +17,7 @@ let mainWindow
 //   Mevcut anahtar→string yapısı AYNEN korunur (koc-prods, koc-sales, ...).
 // Okumalar: açılışta tüm kv belleğe (memStore) yüklenir, senkron IPC
 //   bellekteki kopyadan cevap verir (write-through cache).
-// Yazmalar: önce bellek, sonra SQLite transaction (WAL + synchronous=FULL).
+// Yazmalar: önce kalıcı depo, başarılı işlemden sonra bellek güncellenir.
 // SQLite açılamazsa: eski koc-data.json motoruna düşülür, uygulama çökmez.
 // Eski koc-data.json hiçbir zaman SİLİNMEZ — acil durum yedeği olarak kalır.
 // ───────────────────────────────────────────────────────────────
@@ -22,9 +25,12 @@ let dataFilePath = null      // eski JSON deposu (fallback + acil yedek)
 let dbFilePath = null        // SQLite: userData\kocmarket.db
 let db = null                // better-sqlite3 Database (fallback modunda null)
 let usingSqlite = false
-let memStore = {}
-let sqlSet = null, sqlDel = null   // hazırlanmış statement'lar
-let txSet = null, txDel = null     // transaction sarmalayıcıları
+let memStore = Object.create(null)
+let txApply = null
+const commitMarker = 'koc-atomic-last-operation'
+const fallbackKey = 'koc-native-json-fallback-v1'
+const fallbackAppliedKey = 'json_fallback_applied_v1'
+let fallbackMarker = null
 
 // ── Hata günlüğü: userData\logs\db-YYYY-MM-DD.log ──
 function logError(msg) {
@@ -38,134 +44,245 @@ function logError(msg) {
   } catch (_) { /* günlük yazılamıyorsa sessiz geç — satışı engelleme */ }
 }
 
-function loadStoreFromDisk() {
-  try {
-    const raw = fs.readFileSync(dataFilePath, 'utf8')
-    const obj = JSON.parse(raw)
-    memStore = (obj && typeof obj === 'object') ? obj : {}
-  } catch (e) {
-    // Dosya yoksa (ilk açılış) veya bozuksa boş başla.
-    if (e.code !== 'ENOENT') {
-      console.error('[KOCSTORE] Veri dosyası okunamadı/bozuk:', e.message)
-      // Bozuk dosyayı kaybetmeyelim — yan tarafa kopya al.
-      try { fs.copyFileSync(dataFilePath, dataFilePath + '.corrupt-' + Date.now()) } catch (_) {}
+function digest(value) {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function readJsonSnapshot() {
+  let raw
+  try { raw = fs.readFileSync(dataFilePath) } catch (error) {
+    if (error.code === 'ENOENT') return null
+    throw error
+  }
+  const parsed = JSON.parse(raw)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('JSON deposu geçersiz.')
+  const data = Object.create(null)
+  let marker = null
+  for (const [key, value] of Object.entries(parsed)) {
+    if (key === fallbackKey) {
+      marker = JSON.parse(value)
+      if (marker?.version !== 1 || !marker.baseline || typeof marker.baseline !== 'object' ||
+          Array.isArray(marker.baseline) || Object.hasOwn(marker.baseline, fallbackKey) ||
+          Object.values(marker.baseline).some(hash => typeof hash !== 'string' || !/^[a-f\d]{64}$/.test(hash))) {
+        throw new Error('JSON kurtarma işareti tanınmıyor.')
+      }
+    } else {
+      data[key] = typeof value === 'string' ? value : JSON.stringify(value)
     }
-    memStore = {}
+  }
+  return { data, marker, digest: digest(raw) }
+}
+
+function loadStoreFromDisk(hadDatabase) {
+  const snapshot = readJsonSnapshot()
+  if (hadDatabase && !snapshot) throw new Error('SQLite açılamadı ve geçerli JSON aynası yok. Eski kayıtlar korunuyor.')
+  memStore = snapshot?.data || Object.create(null)
+  fallbackMarker = snapshot?.marker || {
+    version: 1, baseline: Object.fromEntries(Object.entries(memStore).map(([key, value]) => [key, digest(value)]))
   }
 }
 
 // Atomik yazım (yalnızca JSON fallback modunda kullanılır):
 // önce .tmp dosyasına yaz + fsync, sonra rename et.
-function persistStoreToDisk() {
-  const tmp = dataFilePath + '.tmp'
-  const json = JSON.stringify(memStore)
-  const fd = fs.openSync(tmp, 'w')
+function atomicWriteJson(filename, data) {
+  const tmp = filename + '.' + randomUUID() + '.tmp'
+  const json = JSON.stringify(data)
   try {
-    fs.writeSync(fd, json)
+    const fd = fs.openSync(tmp, 'wx')
+    try {
+      fs.writeFileSync(fd, json, 'utf8')
+      fs.fsyncSync(fd)
+    } finally {
+      fs.closeSync(fd)
+    }
+    fs.renameSync(tmp, filename)
+  } catch (error) {
+    try { fs.unlinkSync(tmp) } catch (_) {}
+    throw error
+  }
+}
+
+function persistStoreToDisk(next = memStore) {
+  const data = fallbackMarker ? { ...next, [fallbackKey]: JSON.stringify(fallbackMarker) } : next
+  atomicWriteJson(dataFilePath, data)
+}
+
+function readSqliteSnapshot() {
+  const data = Object.create(null)
+  for (const row of db.prepare('SELECT key, value FROM kv').iterate()) data[row.key] = row.value ?? ''
+  return data
+}
+
+function sameData(first, second) {
+  const keys = Object.keys(first)
+  return keys.length === Object.keys(second).length && keys.every(key => first[key] === second[key])
+}
+
+function salesIndex(raw = '[]') {
+  const sales = JSON.parse(raw)
+  if (!Array.isArray(sales)) throw new Error('Satış kaydı listesi geçersiz.')
+  const indexed = new Map()
+  for (const sale of sales) {
+    if (!sale || (typeof sale.id !== 'number' && (typeof sale.id !== 'string' || !sale.id))) {
+      throw new Error('Satış kimliği geçersiz.')
+    }
+    const id = String(sale.id)
+    if (indexed.has(id)) throw new Error('Yinelenen satış kimliği var; kayıtlar ayrı yedeklerde tutuldu.')
+    indexed.set(id, sale)
+  }
+  return indexed
+}
+
+function hasUnsyncedSales(sqlite, json) {
+  if (sqlite['koc-sales'] === json['koc-sales']) return false
+  const sqlSales = salesIndex(sqlite['koc-sales'])
+  const jsonSales = salesIndex(json['koc-sales'])
+  const { isDeepStrictEqual } = require('node:util')
+  return Array.from(jsonSales).some(([id, sale]) => !isDeepStrictEqual(sqlSales.get(id), sale))
+}
+
+function mergeFallback(sqlite, json, baseline) {
+  if (Object.keys(sqlite).length === 0) {
+    salesIndex(json['koc-sales'])
+    return json
+  }
+  const merged = Object.create(null)
+  for (const key of new Set([...Object.keys(sqlite), ...Object.keys(json)])) {
+    const sqlValue = sqlite[key], jsonValue = json[key]
+    const base = Object.hasOwn(baseline, key) ? baseline[key] : undefined
+    const jsonHash = jsonValue === undefined ? undefined : digest(jsonValue)
+    const sqlHash = sqlValue === undefined ? undefined : digest(sqlValue)
+    let value
+    if (sqlValue === jsonValue || jsonHash === base) value = sqlValue
+    else if (sqlHash === base) value = jsonValue
+    else throw new Error('SQLite ve JSON aynı alanı farklı değiştirdi: ' + key + '. İki doğrulanmış yedek korundu.')
+    if (value !== undefined) merged[key] = value
+  }
+  if (sqlite['koc-sales'] !== merged['koc-sales']) salesIndex(merged['koc-sales'])
+  return merged
+}
+
+function recoveryBackup(data, source) {
+  const backups = path.join(path.dirname(dataFilePath), 'backups')
+  fs.mkdirSync(backups, { recursive: true })
+  const name = 'json-uzlastirma-oncesi-' + Date.now() + '-' + randomUUID() + '-' + source + '.json'
+  const target = path.join(backups, name)
+  const bytes = require('node:buffer').Buffer.from(JSON.stringify(data))
+  const fd = fs.openSync(target, 'wx')
+  try {
+    fs.writeFileSync(fd, bytes)
     fs.fsyncSync(fd)
-  } finally {
-    fs.closeSync(fd)
-  }
-  fs.renameSync(tmp, dataFilePath) // Node: Windows'ta da mevcut dosyanın üzerine atomik yazar
+  } finally { fs.closeSync(fd) }
+  if (!fs.readFileSync(target).equals(bytes)) throw new Error('Uzlaştırma yedeği doğrulanamadı.')
 }
 
-// ── Eski JSON deposunu (varsa) oku, memStore'a DOKUNMADAN obje döndür ──
-function readLegacyJson() {
-  try {
-    const raw = fs.readFileSync(dataFilePath, 'utf8')
-    const obj = JSON.parse(raw)
-    return (obj && typeof obj === 'object') ? obj : {}
-  } catch (_) {
-    return {}
-  }
-}
-
-// ── TEK SEFERLİK GEÇİŞ: koc-data.json → SQLite ──
-// İdempotent: meta tablosundaki migration_done bayrağı varsa hiç dokunmaz.
-// Taşıma öncesi tam JSON yedek alınır; taşıma sonrası anahtar sayısı ve
-// TÜM değerler doğrulanır. Tutarsızlıkta geçiş iptal edilir (hata fırlatılır
-// → çağıran fallback'e düşer). Eski koc-data.json asla silinmez.
-function migrateLegacyToSqlite() {
-  const done = db.prepare("SELECT value FROM meta WHERE key='migration_done'").get()
-  if (done) return
-
-  const legacy = readLegacyJson()
-  const legacyKeys = Object.keys(legacy)
-  const rowCount = db.prepare('SELECT COUNT(*) AS n FROM kv').get().n
-
-  if (rowCount === 0 && legacyKeys.length > 0) {
-    // 1) Taşıma ÖNCESİ tam yedek: backups\migration-yedek-YYYY-MM-DD-HHmm.json
-    const backupsDir = path.join(app.getPath('userData'), 'backups')
-    fs.mkdirSync(backupsDir, { recursive: true })
-    const d = new Date()
-    const pad = (n) => String(n).padStart(2, '0')
-    const stamp = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
-                  '-' + pad(d.getHours()) + pad(d.getMinutes())
-    fs.writeFileSync(path.join(backupsDir, 'migration-yedek-' + stamp + '.json'),
-                     JSON.stringify(legacy), 'utf8')
-
-    // 2) Tüm anahtarları tek transaction içinde taşı
-    const now = new Date().toISOString()
-    const ins = db.prepare('INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?)')
-    db.transaction(() => {
-      for (const k of legacyKeys) ins.run(k, String(legacy[k]), now)
-    })()
-
-    // 3) Doğrulama: sayı + her değerin birebir eşleşmesi
-    const newCount = db.prepare('SELECT COUNT(*) AS n FROM kv').get().n
-    if (newCount !== legacyKeys.length) {
-      db.prepare('DELETE FROM kv').run()
-      throw new Error('Migration doğrulaması başarısız: satır sayısı uyuşmuyor (' +
-                      newCount + ' ≠ ' + legacyKeys.length + ')')
-    }
-    const sel = db.prepare('SELECT value FROM kv WHERE key=?')
-    for (const k of legacyKeys) {
-      const row = sel.get(k)
-      if (!row || row.value !== String(legacy[k])) {
-        db.prepare('DELETE FROM kv').run()
-        throw new Error('Migration doğrulaması başarısız: "' + k + '" değeri uyuşmuyor')
+function reconcileJsonFallback() {
+  const snapshot = readJsonSnapshot()
+  if (!snapshot) return
+  const previous = db.prepare('SELECT value FROM meta WHERE key = ?').get(fallbackAppliedKey)
+  if (previous?.value === snapshot.digest) return
+  const reconcile = db.transaction(() => {
+    const sqlite = readSqliteSnapshot(), json = snapshot.data
+    if (!snapshot.marker && sameData(sqlite, json)) return
+    recoveryBackup(sqlite, 'sqlite')
+    recoveryBackup(json, 'fallback')
+    let merged
+    if (snapshot.marker || Object.keys(sqlite).length === 0) {
+      merged = mergeFallback(sqlite, json, snapshot.marker?.baseline)
+    } else {
+      if (hasUnsyncedSales(sqlite, json)) {
+        throw new Error('Eski JSON dosyasında SQLite ile eşleşmeyen satış var. İki doğrulanmış yedek korundu.')
       }
+      logError('Önceki JSON aynası SQLite ile farklıydı; her iki kaynak doğrulanmış yedek olarak saklandı.')
+      merged = sqlite
     }
-    console.log('[DB] Migration tamam: ' + legacyKeys.length +
-                ' anahtar koc-data.json → kocmarket.db taşındı (eski dosya yedek olarak duruyor).')
-  }
-
-  db.prepare("INSERT INTO meta (key, value) VALUES ('migration_done', ?)").run(new Date().toISOString())
+    if (hasUnsyncedSales(merged, json)) throw new Error('JSON satışları uzlaştırma sonucunda eksik kalacaktı.')
+    const set = db.prepare('INSERT INTO kv (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at')
+    const del = db.prepare('DELETE FROM kv WHERE key=?')
+    const now = new Date().toISOString()
+    for (const key of Object.keys(sqlite)) if (!Object.hasOwn(merged, key)) del.run(key)
+    for (const [key, value] of Object.entries(merged)) if (sqlite[key] !== value) set.run(key, value, now)
+    if (!sameData(readSqliteSnapshot(), merged)) throw new Error('SQLite uzlaştırma sonucu doğrulanamadı.')
+    db.prepare('INSERT OR REPLACE INTO meta (key,value) VALUES (?,?)').run(fallbackAppliedKey, snapshot.digest)
+  })
+  // better-sqlite3 üzerinde karşılaştırma boyunca diğer SQLite yazımlarını engelle.
+  if (reconcile.immediate) reconcile.immediate()
+  else reconcile()
 }
+
+// Eski kurulumlar bu bayrakla JSON'dan geçişin tamamlandığını tanır.
+function markLegacyMigrationDone() {
+  db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('migration_done', ?)").run(new Date().toISOString())
+}
+
+class JsonRecoveryError extends Error {}
 
 // ── SQLite motorunu başlat. Hata fırlatırsa çağıran fallback'e döner. ──
 function initSqlite() {
   const Database = require('better-sqlite3')
-  dbFilePath = path.join(app.getPath('userData'), 'kocmarket.db')
   db = new Database(dbFilePath)
   db.pragma('journal_mode = WAL')
   db.pragma('synchronous = FULL')
   db.exec('CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)')
   db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)')
 
-  migrateLegacyToSqlite()
+  try {
+    reconcileJsonFallback()
+    markLegacyMigrationDone()
+  } catch (error) {
+    throw new JsonRecoveryError('Veri uzlaştırması tamamlanamadı: ' + error.message)
+  }
 
   // Tüm veriyi belleğe yükle — pencere açılmadan ÖNCE çağrıldığı için
   // satış ekranı hiçbir zaman verisiz başlamaz.
-  memStore = {}
-  for (const row of db.prepare('SELECT key, value FROM kv').iterate()) {
-    memStore[row.key] = row.value
-  }
+  memStore = readSqliteSnapshot()
 
-  sqlSet = db.prepare('INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) ' +
-                      'ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at')
-  sqlDel = db.prepare('DELETE FROM kv WHERE key=?')
-  txSet = db.transaction((key, val) => { sqlSet.run(key, val, new Date().toISOString()) })
-  txDel = db.transaction((key) => { sqlDel.run(key) })
+  const set = db.prepare('INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) ' +
+                         'ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at')
+  const del = db.prepare('DELETE FROM kv WHERE key=?')
+  txApply = db.transaction((entries) => {
+    const at = new Date().toISOString()
+    for (const [key, val] of entries) {
+      if (val === null) del.run(key)
+      else set.run(key, val, at)
+    }
+  })
   usingSqlite = true
 }
 
 // ── Ortak yazma/silme: bellek + kalıcı depo (SQLite ya da JSON fallback) ──
+function applyStoreEntries(entries) {
+  if (entries.some(([key]) => key === fallbackKey)) throw new Error('Yerel kurtarma işareti değiştirilemez.')
+  const next = usingSqlite ? memStore : Object.assign(Object.create(null), memStore)
+  if (usingSqlite) txApply(entries)
+  for (const [key, val] of entries) {
+    if (val === null) delete next[key]
+    else next[key] = val
+  }
+  if (!usingSqlite) persistStoreToDisk(next)
+  memStore = next
+}
+
+function storeCommit(operationId, entries) {
+  if (typeof operationId !== 'string' || !operationId.trim()) throw new Error('Geçerli işlem kimliği gerekli.')
+  if (memStore[commitMarker] === operationId) return { alreadyCommitted: true }
+  if (!entries || typeof entries !== 'object' || Array.isArray(entries)) throw new Error('Geçerli kayıt grubu gerekli.')
+  const changes = Object.entries(entries)
+  if (!changes.length || changes.some(([key, val]) => !key || key === commitMarker || (val !== null && typeof val !== 'string'))) {
+    throw new Error('Kayıt grubu geçersiz.')
+  }
+  changes.push([commitMarker, operationId])
+  assertAuthorized(memStore, changes, admin.authenticated())
+  applyStoreEntries(changes)
+  return { alreadyCommitted: false }
+}
+
 function storeSet(key, val) {
   try {
-    memStore[key] = String(val)
-    if (usingSqlite) txSet(key, String(val))
-    else persistStoreToDisk()
+    if (String(key) === commitMarker) return false
+    const changes = [[String(key), String(val)]]
+    assertAuthorized(memStore, changes, admin.authenticated())
+    applyStoreEntries(changes)
     return true
   } catch (err) {
     logError('Yazma hatası (' + key + '): ' + err.message)
@@ -175,10 +292,11 @@ function storeSet(key, val) {
 
 function storeRemove(key) {
   try {
+    if (String(key) === commitMarker) return false
     if (Object.prototype.hasOwnProperty.call(memStore, key)) {
-      delete memStore[key]
-      if (usingSqlite) txDel(key)
-      else persistStoreToDisk()
+      const changes = [[String(key), null]]
+      assertAuthorized(memStore, changes, admin.authenticated())
+      applyStoreEntries(changes)
     }
     return true
   } catch (err) {
@@ -188,6 +306,7 @@ function storeRemove(key) {
 }
 
 function storeGet(key) {
+  if (pinKey(String(key))) return null
   return Object.prototype.hasOwnProperty.call(memStore, key) ? memStore[key] : null
 }
 
@@ -229,6 +348,11 @@ function refreshLegacyMirror() {
   if (!usingSqlite) return
   if (!memStore['koc-prods']) return
   try {
+    const snapshot = readJsonSnapshot()
+    if (snapshot?.marker && db.prepare('SELECT value FROM meta WHERE key = ?').get(fallbackAppliedKey)?.value !== snapshot.digest) {
+      logError('Uzlaştırılmamış JSON kaydı korunuyor; ayna güncellenmedi.')
+      return
+    }
     persistStoreToDisk()
   } catch (err) {
     logError('Acil durum aynası (koc-data.json) güncellenemedi: ' + err.message)
@@ -237,6 +361,8 @@ function refreshLegacyMirror() {
 
 function setupDataStore() {
   dataFilePath = path.join(app.getPath('userData'), 'koc-data.json')
+  dbFilePath = path.join(app.getPath('userData'), 'kocmarket.db')
+  const hadDatabase = fs.existsSync(dbFilePath)
 
   try {
     initSqlite()
@@ -245,9 +371,12 @@ function setupDataStore() {
     // ÇELİK KASA KURALI: DB açılamazsa uygulama ÇÖKMEZ — eski JSON motoruyla devam.
     usingSqlite = false
     if (db) { try { db.close() } catch (_) {} db = null }
+    if (err instanceof JsonRecoveryError) throw err
     logError('SQLite başlatılamadı, JSON fallback aktif: ' + err.message)
-    loadStoreFromDisk()
+    loadStoreFromDisk(hadDatabase)
   }
+  const migrations = startupMigrations(memStore, fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8'))
+  if (migrations.length) applyStoreEntries(migrations)
 
   ipcMain.on('kocstore:read', (e, key) => {
     e.returnValue = storeGet(key)
@@ -262,8 +391,22 @@ function setupDataStore() {
   })
 
   ipcMain.on('kocstore:keys', (e) => {
-    e.returnValue = Object.keys(memStore)
+    e.returnValue = Object.keys(memStore).filter(k => !pinKey(k))
   })
+
+  ipcMain.handle('kocstore:commit', (_event, { operationId, entries }) => {
+    try {
+      return storeCommit(operationId, entries)
+    } catch (err) {
+      logError('Toplu kayıt hatası: ' + err.message)
+      throw err
+    }
+  })
+  ipcMain.handle('admin:status', () => admin.status())
+  ipcMain.handle('admin:lock', () => admin.lock())
+  ipcMain.handle('admin:unlock', (_event, pin) => admin.unlock(memStore, pin, applyStoreEntries))
+  ipcMain.handle('admin:change-pin', (_event, { currentPin,newPin }) =>
+    admin.changePin(memStore, currentPin, newPin, applyStoreEntries))
 
   // ── Yeni kocDB API'si (preload'daki window.kocDB köprüsü için) ──
   // kocstore:* ile aynı depoyu kullanır; ileride doğrudan bu API'ye geçilebilir.
@@ -280,7 +423,7 @@ function setupDataStore() {
   })
 
   ipcMain.on('db-get-all', (e) => {
-    e.returnValue = Object.assign({}, memStore)
+    e.returnValue = Object.fromEntries(Object.entries(memStore).filter(([key]) => !pinKey(key)))
   })
 
   // ── Dosya pencereleri: gerçek "Farklı Kaydet" / "Aç" (Electron dialog) ──
@@ -412,7 +555,19 @@ function setupAutoUpdater() {
 }
 
 app.whenReady().then(() => {
-  setupDataStore()   // IPC + veritabanı pencere açılmadan önce hazır olsun
+  if (!app.requestSingleInstanceLock()) { app.quit(); return }
+  app.on('second-instance', () => {
+    if (mainWindow?.isMinimized()) mainWindow.restore()
+    mainWindow?.focus()
+  })
+  try {
+    setupDataStore()
+  } catch (error) {
+    logError('Veri deposu açılmadı: ' + error.message)
+    dialog.showErrorBox('Koç Market veri deposu', error.message)
+    app.quit()
+    return
+  }
   createWindow()
   setupAutoUpdater()
   runDailyBackup()   // arka planda günlük JSON yedek (satışı bloklamaz)

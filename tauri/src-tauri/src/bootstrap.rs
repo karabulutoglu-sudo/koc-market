@@ -25,13 +25,34 @@ fn ascii_js(source: &str) -> String {
 
 /// boot_json, serde_json ile üretilmiş JSON'dur; köprüden önce yüklenir.
 pub fn build_boot_script(boot_json: &str) -> String {
+    build_boot_script_with_nonce(boot_json, "")
+}
+
+pub fn build_boot_script_with_nonce(boot_json: &str, nonce: &str) -> String {
     // JSON string'indeki </script> ve <!-- HTML ayrıştırıcısını etkileyemez.
     let boot_json = ascii_js(&boot_json.replace('<', "\\u003c"));
     let bridge = ascii_js(BRIDGE_JS);
     let repair_ui = ascii_js(REPAIR_UI_JS);
-    format!(
-        "<script>window.__KOC_BOOT__={boot_json};</script>\n<script>{bridge}</script>\n<script>{repair_ui}</script>\n"
-    )
+    let attr = if nonce.len() == 32 && nonce.bytes().all(|b| b.is_ascii_hexdigit()) {
+        format!(" nonce=\"{nonce}\"")
+    } else {
+        String::new()
+    };
+    format!("<script{attr}>window.__KOC_BOOT__={boot_json};</script>\n<script{attr}>{bridge}</script>\n<script{attr}>{repair_ui}</script>\n")
+}
+
+pub fn csp_with_boot_nonce(policy: &str, nonce: &str) -> String {
+    if nonce.len() != 32 || !nonce.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return policy.to_string();
+    }
+    policy
+        .split(';')
+        .map(|part| {
+            let part = part.trim();
+            if part.starts_with("script-src ") { format!("{part} 'nonce-{nonce}'") } else { part.to_string() }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 pub fn inject_into_html(html: &[u8], boot: &str) -> Vec<u8> {
@@ -68,6 +89,17 @@ mod tests {
             "\\u0130\\u0131\\u011e\\u011f\\u015e\\u015f\\u00dc\\u00fc\\u00d6\\u00f6\\u00c7\\u00e7 \\u2705 \\ud83d\\ude00"
         );
         assert_eq!(ascii_js(r#"\"\\\n\u0130"#), r#"\"\\\n\u0130"#);
+    }
+
+    #[test]
+    fn only_trusted_inline_boot_scripts_share_the_response_nonce() {
+        let nonce = "1a4c3f0262157453b0a92fdfc1dbedf8";
+        let body = build_boot_script_with_nonce("{}", nonce);
+        assert_eq!(body.matches(&format!("nonce=\"{nonce}\"")).count(), 3);
+        let csp = csp_with_boot_nonce("script-src 'self'; script-src-attr 'unsafe-inline'; object-src 'none'", nonce);
+        assert_eq!(csp.matches("nonce-").count(), 1);
+        assert!(csp.starts_with(&format!("script-src 'self' 'nonce-{nonce}';")));
+        assert!(!build_boot_script_with_nonce("{}", "bad nonce").contains("nonce="));
     }
 
     #[test]

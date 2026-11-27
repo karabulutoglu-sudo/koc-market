@@ -16,7 +16,8 @@
 // ═══════════════════════════════════════════════════════════════════
 
 use rusqlite::{params, Connection};
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -26,6 +27,20 @@ use std::time::SystemTime;
 pub type Kv = HashMap<String, String>;
 
 static REPAIR_BACKUP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const FALLBACK_KEY: &str = "koc-native-json-fallback-v1";
+const FALLBACK_APPLIED: &str = "json_fallback_applied_v1";
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct FallbackMarker {
+    version: u32,
+    baseline: Kv,
+}
+
+struct JsonSnapshot {
+    data: Kv,
+    marker: Option<FallbackMarker>,
+    digest: String,
+}
 
 /// Onarım sadece metin değerlerini çözebilir. Kayıtların şekli, barkodları,
 /// sayısal değerleri ve ASCII kimlik/tarih değerleri aynı kalmalıdır.
@@ -65,6 +80,7 @@ pub struct Store {
     conn: Option<Connection>,
     pub mem: Kv,
     json_path: PathBuf,
+    fallback_marker: Option<FallbackMarker>,
     closed: bool,
     /// Eski program uyarısı "Anladım" denince kaydedilecek yeni taban: (parmak izi, kontrol yedeği)
     pending_electron_ack: Option<(String, Option<String>)>,
@@ -166,20 +182,130 @@ fn latest_backup(dir: &Path, prefix: &str) -> Option<PathBuf> {
     v.pop()
 }
 
-fn read_json_kv(path: &Path) -> Option<Kv> {
-    let raw = fs::read_to_string(path).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let obj = v.as_object()?;
+fn digest(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn read_json_snapshot(path: &Path) -> Result<Option<JsonSnapshot>, String> {
+    let raw = match fs::read(path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(format!("JSON deposu okunamadı: {err}")),
+    };
+    let obj: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(&raw)
+        .map_err(|err| format!("JSON deposu geçersiz: {err}"))?;
     let mut out = Kv::new();
+    let mut marker = None;
     for (k, val) in obj {
+        if k == FALLBACK_KEY {
+            let raw = val.as_str().ok_or("JSON kurtarma işareti geçersiz.")?;
+            let parsed: FallbackMarker = serde_json::from_str(raw)
+                .map_err(|err| format!("JSON kurtarma işareti geçersiz: {err}"))?;
+            if parsed.version != 1 || parsed.baseline.contains_key(FALLBACK_KEY)
+                || parsed.baseline.values().any(|v| v.len() != 64 || !v.bytes().all(|b| b.is_ascii_hexdigit())) {
+                return Err("JSON kurtarma işareti tanınmıyor.".into());
+            }
+            marker = Some(parsed);
+            continue;
+        }
         // Electron String(val) ile yazıyordu; string değilse JSON metnine çevir.
         let s = match val {
-            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::String(s) => s,
             other => other.to_string(),
         };
-        out.insert(k.clone(), s);
+        out.insert(k, s);
     }
-    Some(out)
+    Ok(Some(JsonSnapshot { data: out, marker, digest: digest(&raw) }))
+}
+
+fn read_json_kv(path: &Path) -> Option<Kv> {
+    read_json_snapshot(path).ok().flatten().map(|snapshot| snapshot.data)
+}
+
+fn read_sqlite_kv(conn: &Connection) -> rusqlite::Result<Kv> {
+    let mut stmt = conn.prepare("SELECT key, value FROM kv")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?.unwrap_or_default()))
+    })?;
+    rows.collect()
+}
+
+fn indexed_sales(raw: Option<&String>) -> Result<HashMap<String, serde_json::Value>, String> {
+    let Some(raw) = raw else { return Ok(HashMap::new()) };
+    let sales: Vec<serde_json::Value> = serde_json::from_str(raw)
+        .map_err(|err| format!("Satışlar doğrulanamadı: {err}"))?;
+    let mut indexed = HashMap::new();
+    for sale in sales {
+        let id = match sale.get("id") {
+            Some(serde_json::Value::String(id)) if !id.is_empty() => id.clone(),
+            Some(serde_json::Value::Number(id)) => id.to_string(),
+            _ => return Err("Satış kimliği geçersiz.".into()),
+        };
+        if indexed.insert(id, sale).is_some() {
+            return Err("Yinelenen satış kimliği var; kayıtlar ayrı yedeklerde tutuldu.".into());
+        }
+    }
+    Ok(indexed)
+}
+
+fn reconcile_data(sqlite: &Kv, fallback: &Kv, baseline: &Kv) -> Result<Kv, String> {
+    if sqlite.is_empty() {
+        indexed_sales(fallback.get("koc-sales"))?;
+        return Ok(fallback.clone());
+    }
+    let mut merged = Kv::new();
+    let keys: BTreeSet<_> = sqlite.keys().chain(fallback.keys()).collect();
+    for key in keys {
+        let sql = sqlite.get(key);
+        let json = fallback.get(key);
+        let base = baseline.get(key);
+        let sql_hash = sql.map(|v| digest(v.as_bytes()));
+        let json_hash = json.map(|v| digest(v.as_bytes()));
+        let value = if sql == json || json_hash.as_ref() == base {
+            sql
+        } else if sql_hash.as_ref() == base {
+            json
+        } else {
+            return Err(format!("SQLite ve JSON aynı alanı farklı değiştirdi: {key}. İki doğrulanmış yedek korundu."));
+        };
+        if let Some(value) = value {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    if sqlite.get("koc-sales") != merged.get("koc-sales") {
+        indexed_sales(merged.get("koc-sales"))?;
+    }
+    Ok(merged)
+}
+
+fn legacy_mirror_contains_unsynced_sales(sqlite: &Kv, fallback: &Kv) -> Result<bool, String> {
+    if sqlite.get("koc-sales") == fallback.get("koc-sales") {
+        return Ok(false);
+    }
+    let sqlite_sales = indexed_sales(sqlite.get("koc-sales"))?;
+    let fallback_sales = indexed_sales(fallback.get("koc-sales"))?;
+    Ok(fallback_sales.iter().any(|(id, sale)| sqlite_sales.get(id) != Some(sale)))
+}
+
+fn verified_recovery_backup(dir: &Path, data: &Kv, source: &str) -> Result<(), String> {
+    let backups = dir.join("backups");
+    fs::create_dir_all(&backups).map_err(|e| format!("Uzlaştırma yedek klasörü oluşturulamadı: {e}"))?;
+    let bytes = serde_json::to_vec(data).map_err(|err| err.to_string())?;
+    let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
+        .map_err(|err| err.to_string())?.as_nanos();
+    let sequence = REPAIR_BACKUP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let name = format!("json-uzlastirma-oncesi-{nanos}-{}-{sequence}-{source}.json", std::process::id());
+    let target = backups.join(name);
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&target)
+        .map_err(|err| format!("Uzlaştırma yedeği oluşturulamadı: {err}"))?;
+    file.write_all(&bytes).and_then(|_| file.sync_all())
+        .map_err(|err| format!("Uzlaştırma yedeği yazılamadı: {err}"))?;
+    drop(file);
+    let saved = fs::read(&target).map_err(|err| format!("Uzlaştırma yedeği okunamadı: {err}"))?;
+    if saved != bytes {
+        return Err("Uzlaştırma yedeği doğrulanamadı.".into());
+    }
+    Ok(())
 }
 
 // ── Electron verisini bul ve oku (salt-okunur, kopya üzerinden) ─────
@@ -243,12 +369,28 @@ fn find_electron_source(candidates: &[PathBuf], snap_root: &Path, dir: &Path) ->
                 }
             }
         }
-        if found.is_none() {
-            if let Some(d) = read_json_kv(&json) {
-                if !d.is_empty() {
-                    found = Some((json.display().to_string(), d));
+        match read_json_snapshot(&json) {
+            Ok(Some(snapshot)) if snapshot.marker.is_some() => {
+                if let Some((_, sqlite)) = found.as_ref() {
+                    let marker = snapshot.marker.as_ref().unwrap();
+                    verified_recovery_backup(dir, sqlite, "electron-sqlite")?;
+                    verified_recovery_backup(dir, &snapshot.data, "electron-fallback")?;
+                    let merged = reconcile_data(sqlite, &snapshot.data, &marker.baseline)?;
+                    if legacy_mirror_contains_unsynced_sales(&merged, &snapshot.data)? {
+                        return Err("Electron JSON kaynağı uzlaştırılmadan taşınamaz.".into());
+                    }
+                    found = Some((json.display().to_string(), merged));
+                } else if !snapshot.data.is_empty() {
+                    found = Some((json.display().to_string(), snapshot.data));
                 }
             }
+            Ok(Some(snapshot)) if found.is_none() && !snapshot.data.is_empty() => {
+                found = Some((json.display().to_string(), snapshot.data));
+            }
+            Err(err) if found.is_none() => {
+                read_errors.push(format!("{}: {err}", json.display()));
+            }
+            _ => {}
         }
         if let Some((desc, data)) = found {
             log_line(dir, &format!("Electron verisi bulundu: {desc} ({} anahtar)", data.len()));
@@ -272,13 +414,24 @@ fn find_electron_source(candidates: &[PathBuf], snap_root: &Path, dir: &Path) ->
 impl Store {
     /// Depoyu başlat. Err dönerse uygulama AÇILMAMALI (veri riski).
     pub fn init(dir: PathBuf, electron_candidates: &[PathBuf]) -> Result<(Store, InitReport), String> {
+        Self::init_with_sqlite(dir, electron_candidates, Self::open_sqlite)
+    }
+
+    fn init_with_sqlite(
+        dir: PathBuf,
+        electron_candidates: &[PathBuf],
+        open: impl FnOnce(&Path) -> rusqlite::Result<Connection>,
+    ) -> Result<(Store, InitReport), String> {
         fs::create_dir_all(&dir).map_err(|e| format!("Veri klasörü oluşturulamadı: {e}"))?;
         let json_path = dir.join("koc-data.json");
+        let had_database = dir.join("kocmarket.db").exists();
         let mut report = InitReport::default();
 
-        match Self::open_sqlite(&dir) {
+        match open(&dir) {
             Ok(conn) => {
-                let mut st = Store { dir: dir.clone(), conn: Some(conn), mem: Kv::new(), json_path, closed: false, pending_electron_ack: None };
+                let mut st = Store { dir: dir.clone(), conn: Some(conn), mem: Kv::new(), json_path,
+                    fallback_marker: None, closed: false, pending_electron_ack: None };
+                st.reconcile_fallback(&mut report)?;
                 st.migrate_if_needed(electron_candidates, &mut report)?; // geçiş hatası = açılma
                 st.check_electron_usage(electron_candidates, &mut report); // yalnızca uyarı, asla engellemez
                 st.load_mem_from_sqlite().map_err(|e| format!("Veri okunamadı: {e}"))?;
@@ -290,26 +443,27 @@ impl Store {
                 // ÇELİK KASA KURALI: DB açılamazsa uygulama ÇÖKMEZ — JSON motoruyla devam.
                 log_line(&dir, &format!("SQLite başlatılamadı, JSON fallback aktif: {e}"));
                 report.warnings.push(format!("SQLite açılamadı, yedek motor (JSON) kullanılıyor: {e}"));
-                let mut mem = match fs::read_to_string(&json_path) {
-                    Ok(raw) => match serde_json::from_str::<Kv>(&raw) {
-                        Ok(m) => m,
-                        Err(err) => {
-                            let _ = fs::copy(&json_path, dir.join(format!("koc-data.json.corrupt-{}", stamp())));
-                            log_line(&dir, &format!("koc-data.json bozuk: {err}"));
-                            Kv::new()
-                        }
-                    },
-                    Err(_) => Kv::new(),
-                };
-                if mem.is_empty() {
+                let snapshot = read_json_snapshot(&json_path)?;
+                if had_database && snapshot.is_none() {
+                    return Err("SQLite açılamadı ve geçerli JSON aynası yok. Eski kayıtlar korunuyor.".into());
+                }
+                let (mut mem, marker) = snapshot.map(|s| (s.data, s.marker)).unwrap_or_default();
+                if !had_database && mem.is_empty() && marker.is_none() {
                     if let Some(src) = find_electron_source(electron_candidates, &dir.join("migration").join(stamp()), &dir)? {
                         report.migrated_from = Some(src.desc.clone());
                         report.migrated_keys = src.data.len();
                         mem = src.data;
                     }
                 }
-                let st = Store { dir, conn: None, mem, json_path, closed: false, pending_electron_ack: None };
-                st.persist_json().map_err(|e| format!("JSON deposu yazılamadı: {e}"))?;
+                let marker = marker.unwrap_or_else(|| FallbackMarker {
+                    version: 1,
+                    baseline: mem.iter().map(|(key, value)| (key.clone(), digest(value.as_bytes()))).collect(),
+                });
+                let st = Store { dir, conn: None, mem, json_path, fallback_marker: Some(marker),
+                    closed: false, pending_electron_ack: None };
+                if !st.json_path.exists() {
+                    st.persist_json().map_err(|e| format!("JSON deposu yazılamadı: {e}"))?;
+                }
                 report.engine = "json".into();
                 Ok((st, report))
             }
@@ -329,13 +483,57 @@ impl Store {
 
     fn load_mem_from_sqlite(&mut self) -> rusqlite::Result<()> {
         let conn = self.conn.as_ref().unwrap();
-        let mut stmt = conn.prepare("SELECT key, value FROM kv")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?;
-        self.mem.clear();
-        for row in rows {
-            let (k, v) = row?;
-            self.mem.insert(k, v.unwrap_or_default());
+        self.mem = read_sqlite_kv(conn)?;
+        Ok(())
+    }
+
+    fn reconcile_fallback(&mut self, report: &mut InitReport) -> Result<(), String> {
+        let Some(snapshot) = read_json_snapshot(&self.json_path)? else { return Ok(()) };
+        if self.meta_get(FALLBACK_APPLIED).as_deref() == Some(snapshot.digest.as_str()) {
+            return Ok(());
         }
+        let conn = self.conn.as_mut().unwrap();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        let sqlite = read_sqlite_kv(&tx).map_err(|e| e.to_string())?;
+        if snapshot.marker.is_none() && sqlite == snapshot.data {
+            return Ok(());
+        }
+        verified_recovery_backup(&self.dir, &sqlite, "sqlite")?;
+        verified_recovery_backup(&self.dir, &snapshot.data, "fallback")?;
+        let merged = if let Some(marker) = &snapshot.marker {
+            reconcile_data(&sqlite, &snapshot.data, &marker.baseline)?
+        } else if sqlite.is_empty() {
+            indexed_sales(snapshot.data.get("koc-sales"))?;
+            snapshot.data.clone()
+        } else {
+            if legacy_mirror_contains_unsynced_sales(&sqlite, &snapshot.data)? {
+                return Err("Eski JSON dosyasında SQLite ile eşleşmeyen satış var. İki doğrulanmış yedek korundu; uzlaştırma gerekli.".into());
+            }
+            report.warnings.push("Önceki JSON aynası SQLite ile farklıydı; her iki kaynak da doğrulanmış yedek olarak saklandı.".into());
+            sqlite.clone()
+        };
+        if legacy_mirror_contains_unsynced_sales(&merged, &snapshot.data)? {
+            return Err("JSON satışları doğrulanmış SQLite sonucunda eksik kalacaktı. İki kaynak yedeklendi.".into());
+        }
+        for key in sqlite.keys().filter(|key| !merged.contains_key(*key)) {
+            tx.execute("DELETE FROM kv WHERE key=?1", [key]).map_err(|e| e.to_string())?;
+        }
+        let now = now_iso();
+        for (key, value) in merged.iter().filter(|(key, value)| sqlite.get(*key) != Some(*value)) {
+            tx.execute(
+                "INSERT INTO kv (key, value, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                params![key, value, now],
+            ).map_err(|e| e.to_string())?;
+        }
+        if read_sqlite_kv(&tx).map_err(|e| e.to_string())? != merged {
+            return Err("SQLite uzlaştırma sonucu doğrulanamadı; işlem geri alındı.".into());
+        }
+        tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+            params![FALLBACK_APPLIED, snapshot.digest]).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        log_line(&self.dir, "JSON ve SQLite karşılaştırması tamamlandı; doğrulanan kayıtlar tek işlemde korundu.");
         Ok(())
     }
 
@@ -514,7 +712,15 @@ impl Store {
     }
 
     fn persist_json(&self) -> std::io::Result<()> {
-        let json = serde_json::to_vec(&self.mem).map_err(std::io::Error::other)?;
+        let json = if let Some(marker) = &self.fallback_marker {
+            let value = serde_json::to_string(marker).map_err(std::io::Error::other)?;
+            let mut values: HashMap<&str, &str> = self.mem.iter()
+                .map(|(key, val)| (key.as_str(), val.as_str())).collect();
+            values.insert(FALLBACK_KEY, &value);
+            serde_json::to_vec(&values)
+        } else {
+            serde_json::to_vec(&self.mem)
+        }.map_err(std::io::Error::other)?;
         atomic_write(&self.json_path, &json)
     }
 
@@ -605,6 +811,9 @@ impl Store {
         if self.closed {
             return Err("Depo kapatıldı".into());
         }
+        if ops.iter().any(|op| op.key == FALLBACK_KEY) {
+            return Err("Yerel kurtarma işareti değiştirilemez.".into());
+        }
         if let Some(conn) = self.conn.as_mut() {
             let now = now_iso();
             let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -650,6 +859,18 @@ impl Store {
     pub fn refresh_mirror(&self) {
         if self.conn.is_none() || !self.mem.contains_key("koc-prods") {
             return;
+        }
+        match read_json_snapshot(&self.json_path) {
+            Ok(Some(snapshot)) if snapshot.marker.is_some()
+                && self.meta_get(FALLBACK_APPLIED).as_deref() != Some(snapshot.digest.as_str()) => {
+                log_line(&self.dir, "Uzlaştırılmamış JSON kaydı korunuyor; ayna güncellenmedi.");
+                return;
+            }
+            Err(err) => {
+                log_line(&self.dir, &format!("Mevcut JSON deposu korunuyor; ayna güncellenmedi: {err}"));
+                return;
+            }
+            _ => {}
         }
         if let Err(e) = self.persist_json() {
             log_line(&self.dir, &format!("Acil durum aynası güncellenemedi: {e}"));
@@ -728,6 +949,7 @@ mod repair_tests {
         let conn = if sqlite { Some(Store::open_sqlite(&dir.0).unwrap()) } else { None };
         let mut store = Store {
             dir: dir.0.clone(), conn, mem: Kv::new(), json_path: dir.0.join("koc-data.json"),
+            fallback_marker: if sqlite { None } else { Some(FallbackMarker { version: 1, baseline: Kv::new() }) },
             closed: false, pending_electron_ack: None,
         };
         let products = json!([{"b":"8691234567890","n":"ÃœLKER ÅžEKER","p":12.5,"s":9,"c":"GIDA","k":20}]);
@@ -766,7 +988,7 @@ mod repair_tests {
             let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).unwrap();
             rows.map(|r| r.unwrap()).collect()
         } else {
-            serde_json::from_slice(&fs::read(&store.json_path).unwrap()).unwrap()
+            read_json_kv(&store.json_path).unwrap()
         }
     }
 
@@ -822,7 +1044,7 @@ mod repair_tests {
             assert_eq!(store.mem["koc-backups"], expected["koc-backups"]);
             assert_eq!(store.mem["koc-settings"], expected["koc-settings"]);
             assert_eq!(serde_json::from_slice::<Kv>(&fs::read(&backup).unwrap()).unwrap(), expected);
-            assert_eq!(serde_json::from_slice::<Kv>(&fs::read(&store.json_path).unwrap()).unwrap(), repaired);
+            assert_eq!(read_json_kv(&store.json_path).unwrap(), repaired);
             store.shutdown();
         }
     }
@@ -987,7 +1209,7 @@ mod repair_tests {
         store.json_path = blocked.join("koc-data.json");
         assert!(store.apply_repair(&expected, &changes, &backup).is_err());
         assert_eq!(store.mem, expected);
-        assert_eq!(serde_json::from_slice::<Kv>(&fs::read(original_path).unwrap()).unwrap(), expected);
+        assert_eq!(read_json_kv(&original_path).unwrap(), expected);
         store.shutdown();
     }
 
@@ -1003,6 +1225,100 @@ mod repair_tests {
             assert!(store.apply_repair(&expected, &changes, &backup).is_err());
             assert_eq!(store.mem, expected);
         }
+    }
+
+    fn unavailable_sqlite(_: &Path) -> rusqlite::Result<Connection> {
+        Err(rusqlite::Error::InvalidQuery)
+    }
+
+    fn scenario_keys(second_sale: bool) -> Kv {
+        let stock = if second_sale { 8 } else { 9 };
+        let mut sales = vec![json!({"id":"sqlite-sale","total":1200})];
+        if second_sale {
+            sales.push(json!({"id":"json-sale","total":1200,"customerId":"c1"}));
+        }
+        Kv::from([
+            ("koc-prods".into(), json!([{"b":"869","n":"Ürün","p":1200,"s":stock}]).to_string()),
+            ("koc-sales".into(), json!(sales).to_string()),
+            ("koc-cari-state".into(), json!({
+                "customers":[{"id":"c1","name":"Işıl"}],
+                "entries": if second_sale { json!([{"id":"e1","saleId":"json-sale","debitCents":120000}]) } else { json!([]) },
+                "lots": if second_sale { json!([{"id":"l1","saleId":"json-sale","outstandingCents":120000}]) } else { json!([]) }
+            }).to_string()),
+            ("koc-held".into(), if second_sale { "[]".into() } else { json!([{"id":"held-1"}]).to_string() }),
+            ("koc-business-settings".into(), json!({"name":if second_sale {"Koç Market"} else {"Market"}}).to_string()),
+        ])
+    }
+
+    fn write_scenario(store: &mut Store, data: &Kv) {
+        let ops: Vec<_> = data.iter().map(|(key,value)| Op {
+            key: key.clone(), op: "set".into(), val: Some(value.clone()),
+        }).collect();
+        store.apply(&ops).unwrap();
+    }
+
+    #[test]
+    fn sqlite_json_sqlite_keeps_both_sales_and_linked_stock_credit_settings() {
+        let dir = TestDir::new();
+        let before = scenario_keys(false);
+        let after = scenario_keys(true);
+        let (mut sqlite, _) = Store::init(dir.0.clone(), &[]).unwrap();
+        write_scenario(&mut sqlite, &before);
+        sqlite.shutdown();
+
+        let (mut fallback, _) = Store::init_with_sqlite(dir.0.clone(), &[], unavailable_sqlite).unwrap();
+        assert_eq!(fallback.engine(), "json");
+        assert_eq!(fallback.mem, before);
+        write_scenario(&mut fallback, &after);
+        fallback.shutdown();
+        let json_path = dir.0.join("koc-data.json");
+        let pending = fs::read(&json_path).unwrap();
+        let reopened_pending = read_json_snapshot(&json_path).unwrap().unwrap();
+        assert!(reopened_pending.marker.is_some());
+        assert_eq!(reopened_pending.data, after);
+
+        let (sqlite, _) = Store::init(dir.0.clone(), &[]).unwrap();
+        assert_eq!(sqlite.engine(), "sqlite");
+        assert_preserved(&sqlite, &after);
+        let backups: Vec<_> = fs::read_dir(dir.0.join("backups")).unwrap()
+            .map(|entry| entry.unwrap().path()).collect();
+        assert_eq!(backups.len(), 2);
+        assert!(backups.iter().any(|path| read_json_kv(path).as_ref() == Some(&before)));
+        assert!(backups.iter().any(|path| read_json_kv(path).as_ref() == Some(&after)));
+
+        // Yeniden başlatma SQLite onayı ile ayna yenilemesi arasına düşebilir.
+        drop(sqlite);
+        assert_eq!(fs::read(&json_path).unwrap(), pending);
+        let (mut reopened, _) = Store::init(dir.0.clone(), &[]).unwrap();
+        assert_preserved(&reopened, &after);
+        assert_eq!(fs::read_dir(dir.0.join("backups")).unwrap().count(), 2);
+        reopened.shutdown();
+        let mirrored = read_json_snapshot(&json_path).unwrap().unwrap();
+        assert!(mirrored.marker.is_none());
+        assert_eq!(mirrored.data, after);
+    }
+
+    #[test]
+    fn conflicting_fallback_cannot_overwrite_either_source() {
+        let dir = TestDir::new();
+        let (mut sqlite, _) = Store::init(dir.0.clone(), &[]).unwrap();
+        write_scenario(&mut sqlite, &scenario_keys(false));
+        sqlite.shutdown();
+        let (mut fallback, _) = Store::init_with_sqlite(dir.0.clone(), &[], unavailable_sqlite).unwrap();
+        write_scenario(&mut fallback, &scenario_keys(true));
+        fallback.shutdown();
+        let json_path = dir.0.join("koc-data.json");
+        let pending = fs::read(&json_path).unwrap();
+        let conn = Store::open_sqlite(&dir.0).unwrap();
+        conn.execute("UPDATE kv SET value=? WHERE key='koc-prods'",
+            [json!([{"b":"869","n":"Ürün","p":1200,"s":7}]).to_string()]).unwrap();
+        let sql = read_sqlite_kv(&conn).unwrap();
+        drop(conn);
+        let error = Store::init(dir.0.clone(), &[]).err().unwrap();
+        assert!(error.contains("koc-prods"), "{error}");
+        assert_eq!(fs::read(&json_path).unwrap(), pending);
+        assert_eq!(read_sqlite_kv(&Store::open_sqlite(&dir.0).unwrap()).unwrap(), sql);
+        assert_eq!(fs::read_dir(dir.0.join("backups")).unwrap().count(), 2);
     }
 
     fn migration_unicode_fixture() -> Kv {

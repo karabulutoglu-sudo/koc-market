@@ -1,0 +1,63 @@
+name: Tauri Verify
+
+on:
+  push:
+    branches:
+      - 'codex/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tauri-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    if: startsWith(github.ref, 'refs/heads/codex/')
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tauri/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri/src-tauri -> target
+      - name: Kökteki JavaScript testleri
+        run: npm test
+      - name: Tauri bağımlılıkları
+        working-directory: tauri
+        run: npm ci
+      - name: Tauri JavaScript testleri
+        working-directory: tauri
+        run: npm test
+      - name: Rust açılış testleri
+        working-directory: tauri
+        run: npm run test:rust
+      - name: Web dosyaları ve PDF okuma
+        working-directory: tauri
+        run: |
+          npm run hazirla
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:pdf
+      - name: Rust testleri
+        working-directory: tauri
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol,verify-build
+      - name: İzole WebView2 doğrulama ikilisi
+        working-directory: tauri
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --features custom-protocol,verify-build
+      - name: Test ikilisini sakla
+        uses: actions/upload-artifact@v4
+        with:
+          name: koc-market-verify-${{ github.sha }}
+          path: tauri/src-tauri/target/release/koc-market.exe
+          if-no-files-found: error
+          retention-days: 3

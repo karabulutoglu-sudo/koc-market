@@ -8,11 +8,33 @@
   const money = (valueInCents) => Number(valueInCents || 0) / 100;
 
   function createState() {
-    return { schemaVersion: 1, customers: [], lots: [], entries: [] };
+    return { schemaVersion: 1, lastId: 0, customers: [], lots: [], entries: [] };
+  }
+
+  function idNumber(id) {
+    const match = /^(?:customer|sale|lot|entry|payment|price-update)-(\d+)$/.exec(id);
+    const number = match ? Number(match[1]) : 0;
+    return Number.isSafeInteger(number) ? number : 0;
+  }
+
+  function initIdSequence(state) {
+    if (Number.isSafeInteger(state.lastId) && state.lastId >= 0) return;
+    state.lastId = state.customers.length + state.lots.length + state.entries.length;
+    for (const customer of state.customers) {
+      state.lastId = Math.max(state.lastId, idNumber(customer.id));
+    }
+    for (const lot of state.lots) {
+      state.lastId = Math.max(state.lastId, idNumber(lot.id), idNumber(lot.saleId));
+    }
+    for (const entry of state.entries) {
+      state.lastId = Math.max(state.lastId, idNumber(entry.id), idNumber(entry.referenceId));
+    }
   }
 
   function nextId(state, prefix) {
-    return prefix + '-' + (state.entries.length + state.lots.length + state.customers.length + 1);
+    initIdSequence(state);
+    if (state.lastId === Number.MAX_SAFE_INTEGER) throw new Error('Cari kimlik sınırına ulaşıldı.');
+    return prefix + '-' + (++state.lastId);
   }
 
   function customerBalanceCents(state, customerId) {
@@ -41,12 +63,24 @@
     const state = clone(inputState);
     const name = String(customer && customer.name || '').trim();
     if (!name) throw new Error('Cari adı zorunludur.');
+    initIdSequence(state);
     const id = String(customer.id || nextId(state, 'customer'));
     if (state.customers.some(item => item.id === id)) throw new Error('Cari kimliği zaten kayıtlı.');
+    state.lastId = Math.max(state.lastId, idNumber(id));
     state.customers.push({
       id,
       name,
       phone: String(customer.phone || ''),
+      email: String(customer.email || ''),
+      type: String(customer.type || 'customer'),
+      contactPerson: String(customer.contactPerson || ''),
+      address: String(customer.address || ''),
+      city: String(customer.city || ''),
+      district: String(customer.district || ''),
+      postalCode: String(customer.postalCode || ''),
+      taxOffice: String(customer.taxOffice || ''),
+      taxNo: String(customer.taxNo || ''),
+      riskLimit: Number(customer.riskLimit || 0),
       note: String(customer.note || ''),
       createdAt: customer.createdAt || Date.now(),
       active: true
@@ -54,15 +88,101 @@
     return state;
   }
 
+  function updateCustomer(inputState, customerId, changes = {}) {
+    const state = clone(inputState);
+    const customer = state.customers.find(item => item.id === customerId);
+    if (!customer) throw new Error('Cari bulunamadı.');
+    changes = changes ?? {};
+    if (changes.name !== undefined) {
+      const name = String(changes.name || '').trim();
+      if (!name) throw new Error('Cari adı zorunludur.');
+      customer.name = name;
+    }
+    const fields = ['phone','email','type','contactPerson','address','city','district','postalCode','taxOffice','taxNo','note'];
+    fields.forEach(field => {
+      if (changes[field] !== undefined) customer[field] = String(changes[field] || '');
+    });
+    if (changes.riskLimit !== undefined) customer.riskLimit = Number(changes.riskLimit || 0);
+    customer.updatedAt = changes.updatedAt || Date.now();
+    return state;
+  }
+
+  function deactivateCustomer(inputState, customerId) {
+    const state = clone(inputState);
+    const customer = state.customers.find(item => item.id === customerId);
+    if (!customer) throw new Error('Cari bulunamadı.');
+    customer.active = false;
+    customer.deactivatedAt = Date.now();
+    return state;
+  }
+
+  function deleteCustomer(inputState, customerId) {
+    const state = clone(inputState);
+    if (state.entries.some(entry => entry.customerId === customerId) ||
+        state.lots.some(lot => lot.customerId === customerId)) {
+      throw new Error('Hareketi olan cari silinemez; pasife alınmalıdır.');
+    }
+    initIdSequence(state);
+    const before = state.customers.length;
+    state.customers = state.customers.filter(customer => customer.id !== customerId);
+    if (state.customers.length === before) throw new Error('Cari bulunamadı.');
+    return state;
+  }
+
   function requireCustomer(state, customerId) {
-    if (!state.customers.some(customer => customer.id === customerId && customer.active !== false)) {
-      throw new Error('Cari bulunamadı.');
+    const customer = state.customers.find(customer => customer.id === customerId);
+    if (!customer) throw new Error('Cari bulunamadı.');
+    return customer;
+  }
+
+  function openLotsFor(state, customerId) {
+    return state.lots
+      .filter(lot => lot.customerId === customerId && lot.outstandingCents > 0)
+      .sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  function allocatePayment(lots, amountCents, at) {
+    let remainingCents = amountCents;
+    const allocations = [];
+    for (const lot of lots) {
+      if (remainingCents <= 0) break;
+      if (lot.outstandingCents <= 0) continue;
+      const appliedCents = Math.min(remainingCents, lot.outstandingCents);
+      lot.outstandingCents -= appliedCents;
+      remainingCents -= appliedCents;
+      if (lot.outstandingCents === 0) lot.closedAt = Math.max(at, lot.createdAt);
+      allocations.push({
+        lotId: lot.id,
+        saleId: lot.saleId,
+        barcode: lot.barcode,
+        appliedCents,
+        remainingLotCents: lot.outstandingCents
+      });
+    }
+    return { remainingCents, allocations };
+  }
+
+  function applyUnallocatedCredit(state, customerId, at) {
+    const advances = state.entries
+      .filter(entry => entry.customerId === customerId && entry.type === 'payment' &&
+        entry.details?.unallocatedCreditCents > 0)
+      .sort((a, b) => a.at - b.at);
+    if (!advances.length) return;
+    const openLots = openLotsFor(state, customerId);
+    for (const payment of advances) {
+      const { remainingCents, allocations } = allocatePayment(
+        openLots, payment.details.unallocatedCreditCents, Math.max(at, payment.at)
+      );
+      if (!allocations.length) break;
+      payment.details.allocations = [...(payment.details.allocations || []), ...allocations];
+      payment.details.unallocatedCreditCents = remainingCents;
     }
   }
 
   function addCreditSale(inputState, sale) {
     const state = clone(inputState);
-    requireCustomer(state, sale.customerId);
+    const customer = requireCustomer(state, sale.customerId);
+    if (customer.active === false) throw new Error('Pasif cariye yeni borç yazılamaz.');
     const items = Array.isArray(sale.items) ? sale.items : [];
     if (!items.length) throw new Error('Cari satışta en az bir ürün olmalıdır.');
     const at = sale.at || Date.now();
@@ -74,10 +194,11 @@
       const quantity = Number(item.quantity || item.q || 0);
       const unitPriceCents = cents(item.unitPrice != null ? item.unitPrice : item.p);
       const barcode = String(item.barcode != null ? item.barcode : item.b || '');
-      if (!(quantity > 0) || !(unitPriceCents >= 0) || !barcode) {
+      const lineCents = Math.round(quantity * unitPriceCents);
+      if (!Number.isFinite(quantity) || quantity <= 0 || unitPriceCents < 0 ||
+          !Number.isSafeInteger(lineCents) || !Number.isSafeInteger(totalCents + lineCents) || !barcode) {
         throw new Error('Cari satış ürün bilgisi geçersiz.');
       }
-      const lineCents = Math.round(quantity * unitPriceCents);
       totalCents += lineCents;
       const lotId = nextId(state, 'lot');
       state.lots.push({
@@ -106,39 +227,28 @@
       referenceId: saleId,
       details: { items: entryItems }
     });
+    applyUnallocatedCredit(state, sale.customerId, at);
     return state;
   }
 
   function recordPayment(inputState, payment) {
     const state = clone(inputState);
-    requireCustomer(state, payment.customerId);
+    const customer = requireCustomer(state, payment.customerId);
     const amountCents = cents(payment.amount);
-    if (!(amountCents > 0)) throw new Error('Ödeme tutarı sıfırdan büyük olmalıdır.');
-    let remainingCents = amountCents;
-    const allocations = [];
-    const openLots = state.lots
-      .filter(lot => lot.customerId === payment.customerId && lot.outstandingCents > 0)
-      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
-
-    for (const lot of openLots) {
-      if (remainingCents <= 0) break;
-      const appliedCents = Math.min(remainingCents, lot.outstandingCents);
-      lot.outstandingCents -= appliedCents;
-      remainingCents -= appliedCents;
-      if (lot.outstandingCents === 0) lot.closedAt = payment.at || Date.now();
-      allocations.push({
-        lotId: lot.id,
-        saleId: lot.saleId,
-        barcode: lot.barcode,
-        appliedCents,
-        remainingLotCents: lot.outstandingCents
-      });
+    if (!Number.isSafeInteger(amountCents) || amountCents <= 0) {
+      throw new Error('Ödeme tutarı sıfırdan büyük olmalıdır.');
     }
+    if (customer.active === false && amountCents > customerBalanceCents(state, customer.id)) {
+      throw new Error('Pasif caride tahsilat mevcut borcu aşamaz.');
+    }
+    const at = payment.at || Date.now();
+    applyUnallocatedCredit(state, payment.customerId, at);
+    const { remainingCents, allocations } = allocatePayment(openLotsFor(state, payment.customerId), amountCents, at);
 
     appendEntry(state, {
       customerId: payment.customerId,
       type: 'payment',
-      at: payment.at || Date.now(),
+      at,
       debitCents: 0,
       creditCents: amountCents,
       description: String(payment.description || 'Cari tahsilat'),
@@ -159,6 +269,12 @@
     if (!barcode || !(newPriceCents >= 0)) throw new Error('Fiyat güncelleme bilgisi geçersiz.');
     const at = update.at || Date.now();
     const byCustomer = new Map();
+
+    const affectedCustomers = new Set(state.lots
+      .filter(lot => lot.barcode === barcode && lot.outstandingCents > 0 &&
+        lot.highestAppliedUnitPriceCents > 0 && newPriceCents > lot.highestAppliedUnitPriceCents)
+      .map(lot => lot.customerId));
+    for (const customerId of affectedCustomers) applyUnallocatedCredit(state, customerId, at);
 
     for (const lot of state.lots) {
       if (lot.barcode !== barcode || lot.outstandingCents <= 0) continue;
@@ -207,7 +323,7 @@
     return state.entries
       .filter(entry => entry.customerId === customerId)
       .slice()
-      .sort((a, b) => a.at - b.at || a.id.localeCompare(b.id))
+      .sort((a, b) => a.at - b.at)
       .map(entry => Object.assign({}, entry, {
         debit: money(entry.debitCents),
         credit: money(entry.creditCents),
@@ -218,6 +334,9 @@
   return {
     createState,
     addCustomer,
+    updateCustomer,
+    deactivateCustomer,
+    deleteCustomer,
     addCreditSale,
     recordPayment,
     applyPriceIncrease,

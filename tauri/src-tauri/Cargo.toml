@@ -10,6 +10,10 @@ rust-version = "1.77"
 name = "koc_market_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+verify-build = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -20,6 +24,8 @@ tauri-plugin-updater = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+ring = "0.17"
+sha2 = "0.10"
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 chrono = "0.4"
 tokio = { version = "1", features = ["time"] }

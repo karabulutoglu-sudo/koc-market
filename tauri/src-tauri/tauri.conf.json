@@ -12,7 +12,7 @@
     "withGlobalTauri": false,
     "windows": [],
     "security": {
-      "csp": null
+      "csp": "default-src 'none'; script-src 'self'; script-src-attr 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
     }
   },
   "bundle": {

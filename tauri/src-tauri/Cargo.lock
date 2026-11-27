@@ -2014,9 +2014,11 @@ name = "koc-market"
 version = "2.0.4"
 dependencies = [
  "chrono",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

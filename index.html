@@ -532,6 +532,47 @@ body{background:var(--bg);font-family:Inter,"Segoe UI",Tahoma,sans-serif;color:v
 .cat-icon-btn.danger{color:var(--red)}.cat-path{font-size:11px;color:var(--muted);margin:0 0 12px;line-height:1.5}
 .settings-placeholder{padding:24px;border:1.5px dashed var(--border);border-radius:12px;color:var(--muted);text-align:center;line-height:1.6}
 @media(max-width:900px){.settings-layout{grid-template-columns:1fr}.settings-nav{position:static;display:flex;overflow:auto}.settings-nav button{white-space:nowrap}.cat-manager{grid-template-columns:1fr}.settings-grid{grid-template-columns:1fr}}
+/* ══ YAYIN 2 — Koç Petrol Market paleti ve hibrit kasa ══ */
+:root{--bg:#F3F5F6;--surface:#0A2031;--surface2:#0A2031;--surface3:#071827;--border:#D7E1E6;--accent:#008977;--accent2:#007364;--accent3:#008977;--accent-light:#E6F4F1;--text:#0A2032;--muted:#536874;--soft:#7A8D97;--card:#FFFFFF;--card-dark:#F3F5F6;--green:#0E7A55}
+.header{background:#0A2031;box-shadow:none}
+.header .sub{color:#B4C6CE}
+.tab{color:#E6F4F1;min-height:44px}
+.tab:hover{background:#143346;color:#fff}
+.tab.active{background:#007364;box-shadow:none;color:#fff}
+.barcode-wrap{border-color:#C3DFD9}
+.barcode-wrap:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-light)}
+.barcode-btn,.btn-pay,.tb-btn--green,.settings-save,.cari-primary{background:#007364!important;box-shadow:none!important}
+#cartSummary{background:#fff;color:var(--text);border-bottom:1px solid var(--border);padding:10px 12px}
+.cart-sum-row{gap:8px}
+.cart-sum-num{font-size:20px;line-height:1}
+.cart-sum-lbl{font-size:13px;color:var(--muted)}
+.cart-sum-total{font-size:clamp(22px,2.7vw,36px);line-height:1.05;white-space:nowrap;color:var(--text)}
+.cart-sum-num{color:var(--text)}
+.btn-clear{background:#fcf7f5;border-color:#f0dedc;color:#91484d}
+.action-row{padding:8px 10px;gap:5px;grid-template-columns:repeat(auto-fit,minmax(92px,1fr))!important}
+.act-btn{font-size:11.5px;padding:6px 4px;min-height:42px;letter-spacing:0}
+@media(max-width:1100px){.cart-sum-btns{gap:5px}.btn-clear,.btn-pay{width:62px;height:62px;font-size:11px}}
+.pay-shortcuts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:10px}
+.pay-shortcut{min-height:44px;border:1px solid #007364;border-radius:9px;background:#007364;color:#fff;font-weight:800;font-size:14px}
+.pay-shortcut:hover{background:#006456}
+.pos-approval{display:flex;gap:8px;align-items:center;padding:10px 12px;border:1px solid var(--border);border-radius:10px;margin:10px 0 12px;font-weight:700;cursor:pointer}
+.btn-finish:disabled{opacity:.45;cursor:not-allowed;transform:none}
+.rail-session{display:grid;gap:6px;padding-bottom:10px;margin-bottom:6px;border-bottom:1px solid #315063}
+#railRole{font-size:11px;font-weight:800;color:#B4C6CE;letter-spacing:.3px}
+.header #lockBtn{display:flex!important;align-items:center;justify-content:flex-start;gap:8px;width:100%;min-height:42px;background:#143346!important;border:1px solid #315063!important;color:#fff!important}
+.header #lockBtn.admin-on{border-color:#71D2C1!important}
+.header #lockBtn .lock-lbl{font-size:12px;font-weight:800}
+@media(max-width:1100px){.header>div:last-child{display:flex!important}.header>div:last-child>:not(.rail-session){display:none!important}#railRole,.header #lockBtn .lock-lbl{display:none}.header #lockBtn{justify-content:center}}
+.keypad-toggle-btn{width:calc(100% - 20px);margin:6px 10px 0;min-height:38px;border:1px solid var(--border);border-radius:9px;background:#fff;color:var(--text);font-weight:800;text-align:left;padding:0 12px}
+body[data-kasa-modu="dokunmatik"] :is(.qty-btn,.del-btn){width:48px;height:48px}
+body[data-kasa-modu="dokunmatik"] :is(.act-btn,.keypad-btn,.pay-method,.pay-shortcut,.btn-finish,.btn-cancel,.cari-pay-row,.tab,.keypad-toggle-btn,.barcode-btn){min-height:48px}
+body[data-kasa-modu="dokunmatik"] .keypad-btn{font-size:18px}
+body[data-kasa-modu="dokunmatik"] .header #lockBtn{min-height:48px}
+body[data-kasa-modu="masaustu"] :is(.qty-btn,.del-btn){width:36px;height:36px}
+.kasa-mode-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:6px 0 14px}
+.kasa-mode-choice{min-height:72px;border:1.5px solid var(--border);border-radius:12px;background:#fff;text-align:left;padding:12px;font-weight:800}
+.kasa-mode-choice small{display:block;font-weight:600;color:var(--muted);margin-top:4px}
+.kasa-mode-choice[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-light);color:#006456}
 </style>
 </head>
 <body>
@@ -549,6 +590,7 @@ body{background:var(--bg);font-family:Inter,"Segoe UI",Tahoma,sans-serif;color:v
     </div>
   </div>
   <div style="display:flex;gap:8px;align-items:center">
+    <div class="rail-session"><span id="railRole">Kasiyer</span><button id="lockBtn" class="tb-btn tb-btn--lock" onclick="lockButtonClick()" aria-label="Kilit" title="Kilitli (Kasiyer modu)"><span class="lock-ico"></span><span class="lock-lbl"></span></button></div>
     <button id="rescueBtn" onclick="rescueFocus()" title="İmleç kayboldu / kutu pasifleştiyse tıkla" style="padding:6px 10px;border-radius:8px;border:1.5px solid var(--accent);background:var(--accent-light);color:var(--accent);font-weight:800;font-size:14px;cursor:pointer;line-height:1;display:flex;align-items:center;gap:5px">
       🔄 <span style="font-size:11px;letter-spacing:.5px">YENİLE</span>
     </button>
@@ -608,6 +650,7 @@ body{background:var(--bg);font-family:Inter,"Segoe UI",Tahoma,sans-serif;color:v
           <button class="act-btn cancel" onclick="cancelSale()" title="Tüm satışı iptal et">✕ İPTAL</button>
         </div>
         <div id="multIndicator" class="mult-indicator" style="display:none">⏳ Sonraki ürün: <span id="multVal">1</span> adet</div>
+        <button type="button" class="keypad-toggle-btn" id="keypadToggle" onclick="toggleKeypad()" aria-expanded="false" aria-controls="keypadRow">⌨ Tuş takımı</button>
         <div class="keypad-row" id="keypadRow">
           <button class="keypad-btn" onclick="keypadPress('1')">1</button>
           <button class="keypad-btn" onclick="keypadPress('2')">2</button>
@@ -704,9 +747,6 @@ body{background:var(--bg);font-family:Inter,"Segoe UI",Tahoma,sans-serif;color:v
       <div class="tb-group">
         <div class="tb-label">Sistem</div>
         <div class="tb-row">
-          <button id="lockBtn" class="tb-btn tb-btn--lock" onclick="lockButtonClick()" aria-label="Kilit" title="Kilitli (Kasiyer modu)">
-            <span class="lock-ico"></span><span class="lock-lbl"></span>
-          </button>
           <button class="tb-btn tb-btn--icon" onclick="openHelpModal()" title="Yardım — bu butonların ne işe yaradığını öğren" aria-label="Yardım">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
           </button>
@@ -808,6 +848,7 @@ body{background:var(--bg);font-family:Inter,"Segoe UI",Tahoma,sans-serif;color:v
           <button data-pane="product" onclick="setSettingsPane('product')">📦 Ürün ve Stok</button>
           <button data-pane="price" onclick="setSettingsPane('price')">🏷 Fiyat ve KDV</button>
           <button data-pane="users" onclick="setSettingsPane('users')">🔐 Kullanıcı ve Yetki</button>
+          <button data-pane="kasa" onclick="setSettingsPane('kasa')">🖥 Kasa Görünümü</button>
           <button data-pane="backup" onclick="setSettingsPane('backup')">🛡 Yedekleme</button>
         </nav>
         <main class="settings-card" id="settingsContent"></main>
@@ -1787,6 +1828,66 @@ function flash(msg, ok) {
   toastTimer = setTimeout(() => t.classList.add('hidden'), 2000);
 }
 
+const KASA_GORUNUM_KEY = 'koc-ui-kasa-gorunum';
+const KASA_GORUNUMLERI = ['otomatik','masaustu','dokunmatik'];
+const KASA_GORUNUM_ADI = {otomatik:'Otomatik', masaustu:'Masaüstü', dokunmatik:'Dokunmatik POS'};
+let keypadOpen = null; // null = görünüm varsayılanı
+function kasaGorunumTercihi() {
+  try { const v = window.localStorage.getItem(KASA_GORUNUM_KEY); return KASA_GORUNUMLERI.includes(v) ? v : 'otomatik'; }
+  catch (e) { return 'otomatik'; }
+}
+function kasaDokunmatikAlgila() {
+  try { return !!(window.matchMedia && window.matchMedia('(any-pointer: coarse)').matches) || Number(navigator.maxTouchPoints || 0) > 0; }
+  catch (e) { return false; }
+}
+function kasaEtkinGorunum(pref) {
+  const p = KASA_GORUNUMLERI.includes(pref) ? pref : kasaGorunumTercihi();
+  return p === 'otomatik' ? (kasaDokunmatikAlgila() ? 'dokunmatik' : 'masaustu') : p;
+}
+function kasaGorunumKilitli() {
+  return cart.length > 0 || paying;
+}
+function syncKeypadVisibility() {
+  const row = document.getElementById('keypadRow'), btn = document.getElementById('keypadToggle');
+  if (!row) return;
+  const open = keypadOpen ?? (document.body.dataset.kasaModu === 'dokunmatik');
+  row.classList.toggle('hidden', !open);
+  if (btn) { btn.setAttribute('aria-expanded', String(open)); btn.textContent = open ? '⌨ Tuş takımını gizle' : '⌨ Tuş takımı'; }
+}
+function toggleKeypad() {
+  const row = document.getElementById('keypadRow');
+  keypadOpen = row ? row.classList.contains('hidden') : true;
+  syncKeypadVisibility();
+}
+function applyKasaGorunum() {
+  const mode = kasaEtkinGorunum();
+  if (document.body.dataset.kasaModu === mode) return;
+  if (document.body.dataset.kasaModu && kasaGorunumKilitli()) return;
+  document.body.dataset.kasaModu = mode;
+  keypadOpen = null;
+  syncKeypadVisibility();
+}
+function setKasaGorunum(pref) {
+  if (!KASA_GORUNUMLERI.includes(pref)) return;
+  if (kasaGorunumKilitli()) return flash('Sepet doluyken veya ödeme açıkken kasa görünümü değiştirilemez.', false);
+  if (!isAdmin()) return requireAdmin(() => setKasaGorunum(pref));
+  try { window.localStorage.setItem(KASA_GORUNUM_KEY, pref); } catch (e) { return flash('Görünüm tercihi kaydedilemedi.', false); }
+  document.body.dataset.kasaModu = kasaEtkinGorunum(pref);
+  keypadOpen = null;
+  syncKeypadVisibility();
+  renderSettings();
+  flash('✓ Kasa görünümü: ' + KASA_GORUNUM_ADI[pref], true);
+}
+function renderKasaGorunumSettings() {
+  const host = document.getElementById('settingsContent');
+  const pref = kasaGorunumTercihi(), etkin = kasaEtkinGorunum(pref);
+  const aciklama = {otomatik:'Dokunmatik ekran algılanırsa Dokunmatik POS, yoksa Masaüstü.', masaustu:'Tuş takımı kapalı, sıkı sepet; klavye ve barkod okuyucu.', dokunmatik:'Tuş takımı açık, en az 48 px dokunma hedefleri.'};
+  host.innerHTML = `<h3>🖥 Kasa Görünümü</h3><div class="hint">Bu tercih yalnızca bu bilgisayarda saklanır. Sepet doluyken veya ödeme açıkken görünüm değişmez. Değiştirmek için yönetici PIN’i gerekir.</div>
+    <div class="kasa-mode-grid">${KASA_GORUNUMLERI.map(k => `<button type="button" class="kasa-mode-choice" data-kasa-pref="${k}" aria-pressed="${k === pref}">${KASA_GORUNUM_ADI[k]}<small>${aciklama[k]}</small></button>`).join('')}</div>
+    <div class="hint">Şu an etkin: <b>${KASA_GORUNUM_ADI[etkin]}</b>${pref === 'otomatik' ? (kasaDokunmatikAlgila() ? ' (dokunmatik ekran algılandı)' : ' (dokunmatik ekran algılanmadı)') : ''}</div>`;
+  host.querySelectorAll('[data-kasa-pref]').forEach(b => { b.onclick = () => setKasaGorunum(b.dataset.kasaPref); });
+}
+
 // ── TABS ──
 function switchTab(id) {
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
@@ -2113,6 +2214,7 @@ function renderSettings() {
   if (settingsPane === 'product') return renderProductStockSettings();
   if (settingsPane === 'price') return renderPriceVatSettings();
   if (settingsPane === 'users') return renderUserSettings();
+  if (settingsPane === 'kasa') return renderKasaGorunumSettings();
   if (settingsPane === 'backup') return renderBackupSettings();
 }
 function setSettingsPane(pane) {
@@ -2810,16 +2912,23 @@ function updateLockUI(){
   if (!btn) return;
   const ico = btn.querySelector('.lock-ico');
   const lbl = btn.querySelector('.lock-lbl');
+  const role = document.getElementById('railRole');
   if (isAdmin()) {
+    const label = 'Oturumu kilitle';
     btn.classList.add('admin-on');
     btn.title = 'Yönetici modu AÇIK (kalan ' + _adminRemainStr() + ') — basınca kilitle';
+    btn.setAttribute('aria-label', label);
     if (ico) ico.innerHTML = LOCK_ICON_OPEN;
-    if (lbl) lbl.textContent = 'Açık';
+    if (lbl) lbl.textContent = label;
+    if (role) role.textContent = 'Yönetici · ' + _adminRemainStr();
   } else {
+    const label = 'Yönetici girişi';
     btn.classList.remove('admin-on');
     btn.title = 'Kilitli (Kasiyer modu) — zam/silme için yönetici PIN gerekir';
+    btn.setAttribute('aria-label', label);
     if (ico) ico.innerHTML = LOCK_ICON_CLOSED;
-    if (lbl) lbl.textContent = '';
+    if (lbl) lbl.textContent = label;
+    if (role) role.textContent = 'Kasiyer';
   }
 }
 // Açık modda kalan süreyi tazele + 5 dk dolunca butonu kilitli göster
@@ -3082,6 +3191,7 @@ function renderCart() {
     area.innerHTML = `<div class="cart-empty"><div class="cart-empty-icon">🛒</div><div style="font-weight:700;margin-top:10px;font-size:18px">Sepet Boş</div><div style="font-size:14px;margin-top:6px">Barkod okutun veya hızlı satıştan ekleyin</div></div>`;
     summary.classList.add('hidden');
     payA.classList.add('hidden');
+    applyKasaGorunum();
     return;
   }
 
@@ -3133,7 +3243,7 @@ function renderCart() {
     }
     const isCard = paymentMethod === 'card';
     const paymentInputHtml = isCard
-      ? `<div class="pay-hint" style="font-size:14px;margin:12px 0 18px">Karttan toplam tutar çekilecek.</div>`
+      ? `<div class="pay-hint" style="font-size:14px;margin:12px 0 4px">Toplam tutarı POS cihazında çekin.</div><label class="pos-approval"><input type="checkbox" id="cardPosApproved" onchange="const b=document.querySelector('#payArea .btn-finish'); if(b) b.disabled=!this.checked;"> POS cihazında ödeme onaylandı</label>`
       : `<input class="pay-input" id="payInput" placeholder="Alınan tutar (opsiyonel)" type="text" inputmode="decimal" onkeydown="if(event.key==='Enter')finishSale();if(event.key==='Escape')cancelPayment();"><div class="pay-hint">Para üstü gerekmiyorsa boş bırak</div>`;
     payA.innerHTML = `
       <div class="pay-area">
@@ -3145,6 +3255,7 @@ function renderCart() {
         <button class="btn-finish" onclick="finishSale()">✓ TAMAMLA</button>
         <button class="btn-cancel" onclick="paymentMethod='';renderCart()">← ÖDEME YÖNTEMLERİ</button>
       </div>`;
+    if (isCard) { const b = payA.querySelector('.btn-finish'); if (b) b.disabled = true; }
     const pi = document.getElementById('payInput');
     if (pi) {
       pi.addEventListener('input', showChange);
@@ -3170,8 +3281,14 @@ function renderCart() {
           <div class="cart-sum-count"><span class="cart-sum-num">${cartCount()}</span><span class="cart-sum-lbl">ÜRÜN</span></div>
           <div class="cart-sum-total">${fmt(cartTotal())}</div>
         </div>
-      </div>`;
+      </div>
+      <div class="pay-shortcuts" role="group" aria-label="Ödeme türü"><button type="button" class="pay-shortcut" data-pay-method="cash" onclick="startPayment('cash')">💵 Nakit</button><button type="button" class="pay-shortcut" data-pay-method="card" onclick="startPayment('card')">💳 Kart</button><button type="button" class="pay-shortcut" data-pay-method="cari" onclick="startPayment('cari')">👥 Cariye yaz</button></div>`;
   }
+}
+
+function startPayment(method) {
+  if (!cart.length || dataCommitBusy) return;
+  paying = true; paymentMethod = ['cash','card','cari'].includes(method) ? method : ''; renderCart();
 }
 
 function cancelPayment() {
@@ -3189,13 +3306,13 @@ function selectPaymentMethod(method) {
 function renderCariPaymentPicker() {
   const payA = document.getElementById('payArea');
   const query = ((document.getElementById('cariPaySearch') || {}).value || '').toLocaleLowerCase('tr-TR');
-  const customers = (cariState.customers || []).filter(c => c.active !== false && c.name.toLocaleLowerCase('tr-TR').includes(query));
+  const customers = (cariState.customers || []).filter(c => c.active !== false && (c.name.toLocaleLowerCase('tr-TR').includes(query) || String(c.phone||'').includes(query)));
   payA.innerHTML = `
     <div class="pay-area" style="max-width:440px;border-color:var(--orange)">
       <div class="pay-title" style="color:#A85B0C">CARİYE YAZ</div>
       <div class="pay-total-label">Sepet tutarı</div>
       <div class="pay-total-val">${fmt(cartTotal())}</div>
-      <input id="cariPaySearch" class="pay-input" style="font-size:16px;text-align:left" placeholder="Cari ara..." value="${escHtml(query)}" oninput="renderCariPaymentPicker()">
+      <input id="cariPaySearch" class="pay-input" style="font-size:16px;text-align:left" placeholder="Cari adı veya telefon ile ara..." value="${escHtml(query)}" oninput="renderCariPaymentPicker()">
       <button class="cari-quick-add" onclick="openNewCariFromPayment()">＋ YENİ CARİ EKLE</button>
       <div class="cari-pay-list">${customers.length ? customers.map(c => `
         <button class="cari-pay-row" data-customer-id="${escHtml(c.id)}">
@@ -3225,7 +3342,7 @@ function showChange() {
 function finishSale() {
   const pi = document.getElementById('payInput');
   const totalCents = cartTotalCents();
-  if (paymentMethod === 'card') return completeSale({ method:'card', paidCents:totalCents });
+  if (paymentMethod === 'card') { if (!document.getElementById('cardPosApproved')?.checked) return flash('Önce POS cihazındaki onayı işaretleyin.', false); return completeSale({ method:'card', paidCents:totalCents }); }
   if (!pi) return;
   const raw = (pi.value || '').trim();
   const paidCents = raw === '' ? totalCents : toCents(parsePrice(raw));
@@ -6957,6 +7074,8 @@ async function qaSubmit() {
 // ── INIT ──
 applyBusinessSettings();
 renderQuick();
+applyKasaGorunum();
+try { window.matchMedia('(any-pointer: coarse)').addEventListener('change', applyKasaGorunum); } catch (e) {}
 renderCart();
 updateStats();
 updateHeldBadge();

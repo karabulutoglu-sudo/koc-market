@@ -1,0 +1,25 @@
+name: Tauri Prerelease Acceptance
+
+on:
+  push:
+    branches: ['codex/yayin2-onsurum-kabul']
+
+permissions:
+  contents: read
+
+jobs:
+  installed-upgrade:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: İmzalı kurulum ve yükseltme provası
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./tauri/scripts/verify-installed-prerelease.ps1
